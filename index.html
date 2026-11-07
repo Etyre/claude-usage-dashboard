@@ -1,0 +1,497 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude Usage</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+:root {
+  color-scheme: light;
+  --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+  --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,0.10); --neutral: #c3c2b7;
+  --good: #006300; --bad: #d03b3b; --warn-bg: #fff7e0;
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4; --s6: #008300; --s7: #6250d6; --s8: #e34948; --s9: #0e9aa7; --s10: #8c5a2b; --s11: #b03ac4; --s12: #7a9a00;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10); --neutral: #52514e;
+    --good: #0ca30c; --bad: #e66767; --warn-bg: #2a2410;
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767; --s9: #22b3c0; --s10: #b07a4a; --s11: #c45bd6; --s12: #9ab82a;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+  --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10); --neutral: #52514e;
+  --good: #0ca30c; --bad: #e66767; --warn-bg: #2a2410;
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767; --s9: #22b3c0; --s10: #b07a4a; --s11: #c45bd6; --s12: #9ab82a;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+.wrap { max-width: 1240px; margin: 0 auto; padding: 20px 16px 48px; }
+header { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+h1 { font-size: 20px; font-weight: 600; margin: 0; }
+.sub { color: var(--muted); font-size: 12.5px; margin: 0 0 16px; }
+.controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--surface); }
+.seg button { border: 0; background: transparent; color: var(--ink-2); padding: 6px 11px; cursor: pointer; font: inherit; }
+.seg button[aria-pressed="true"] { background: var(--ink); color: var(--surface); }
+select, button.btn { font: inherit; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface); color: var(--ink); cursor: pointer; }
+.notice { background: var(--warn-bg); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin: 0 0 16px; font-size: 13px; }
+.notice code { font-size: 12px; }
+.notice ol { margin: 6px 0 0; padding-left: 20px; }
+.err { color: var(--bad); }
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.tile { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; }
+.tile .label { color: var(--ink-2); font-size: 12.5px; }
+.tile .value { font-size: 26px; font-weight: 600; margin-top: 2px; letter-spacing: -0.01em; }
+.tile .hero { font-size: 40px; }
+.tile .delta { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.tile .delta.up { color: var(--bad); } .tile .delta.down { color: var(--good); }
+.grid { display: grid; grid-template-columns: 1fr; gap: 16px; }
+@media (min-width: 900px) { .grid.two { grid-template-columns: 1fr 1fr; } }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px 10px; margin-bottom: 16px; }
+.card h2 { font-size: 14px; font-weight: 600; margin: 0 0 2px; }
+.cardhead { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.seg.small button { padding: 3px 9px; font-size: 12px; }
+.card .hint { color: var(--muted); font-size: 12px; margin: 0 0 8px; }
+.chart { position: relative; height: 280px; }
+.chart.tall { height: 320px; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: right; padding: 7px 8px; border-bottom: 1px solid var(--grid); white-space: nowrap; font-variant-numeric: tabular-nums; }
+th { color: var(--ink-2); font-weight: 500; font-size: 12px; }
+th:first-child, td:first-child { text-align: left; }
+td.name { white-space: normal; }
+.sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 7px; vertical-align: -1px; }
+.spark { vertical-align: middle; }
+details summary { cursor: pointer; color: var(--ink-2); font-size: 13px; padding: 4px 0; }
+.foot { color: var(--muted); font-size: 12px; margin-top: 12px; }
+.pill { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); color: var(--ink-2); margin-left: 6px; vertical-align: 2px; }
+.empty { color: var(--muted); padding: 24px 0; text-align: center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Claude Usage</h1>
+    </div>
+    <div class="controls">
+      <div class="seg" id="tabs" role="tablist">
+        <button data-tab="apps" aria-pressed="true">Apps (API + Agent SDK)</button>
+        <button data-tab="local" aria-pressed="false">Claude Code sessions</button>
+      </div>
+      <div class="seg" id="ranges">
+        <button data-range="7">7d</button>
+        <button data-range="30" aria-pressed="true">30d</button>
+        <button data-range="90">90d</button>
+        <button data-range="mtd">Month</button>
+      </div>
+      <select id="groupBy" aria-label="Group by"></select>
+      <button class="btn" id="refresh" title="Ask the server to re-pull everything now">Refresh</button>
+    </div>
+  </header>
+  <p class="sub" id="status">Loading…</p>
+  <div id="notice"></div>
+  <div class="kpis" id="kpis"></div>
+
+  <div class="card">
+    <div class="cardhead">
+      <h2 id="costTitle">Daily cost</h2>
+      <div class="seg small" id="costMetric" title="Show the bars in dollars or in tokens">
+        <button data-metric="cost" aria-pressed="true">$</button>
+        <button data-metric="tokens" aria-pressed="false">Tokens</button>
+      </div>
+    </div>
+    <p class="hint" id="dailyHint">USD per day. Hover a bar for the breakdown.</p>
+    <div class="chart tall"><canvas id="costChart"></canvas></div>
+  </div>
+
+  <div class="grid two">
+    <div class="card">
+      <h2>Daily tokens by type</h2>
+      <p class="hint">Cache reads are usually the bulk of tokens but a small share of cost.</p>
+      <div class="chart"><canvas id="tokChart"></canvas></div>
+    </div>
+    <div class="card">
+      <h2 id="modelTitle">Cost by model</h2>
+      <p class="hint">Total over the selected range.</p>
+      <div class="chart"><canvas id="modelChart"></canvas></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 id="tableTitle">Apps</h2>
+    <p class="hint">Totals over the selected range. Trend is the last 14 days of cost.</p>
+    <div style="overflow-x:auto"><table id="groupTable"></table></div>
+  </div>
+
+  <div class="card">
+    <details>
+      <summary>Daily table</summary>
+      <div style="overflow-x:auto"><table id="dailyTable"></table></div>
+    </details>
+  </div>
+  <p class="foot" id="foot"></p>
+</div>
+
+<script>
+(() => {
+  const SLOTS = ['--s1','--s2','--s3','--s4','--s5','--s6','--s7','--s8','--s9','--s10','--s11','--s12'];
+  const TOKEN_TYPES = [
+    ['uncached', 'Input (uncached)', '--s1'],
+    ['cache_write', 'Cache write', '--s2'],
+    ['cache_read', 'Cache read', '--s3'],
+    ['output', 'Output', '--s4'],
+  ];
+  const GROUPS = {
+    apps: [['app', 'App'], ['source', 'Source'], ['billing', 'Billing'], ['model', 'Model'], ['workspace', 'Workspace']],
+    local: [['project', 'Project'], ['model', 'Model']],
+  };
+  const SRC_API = 'API key', SRC_SDK = 'Agent SDK', BILL_API = 'Billed to API', BILL_SUB = 'Subscription';
+  const state = { tab: 'apps', range: '30', groupBy: 'app', costMetric: 'cost', data: null, charts: {} };
+
+  const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+  const fmtUSD = (v) => v == null ? '—' : (Math.abs(v) >= 100 ? '$' + Math.round(v).toLocaleString() : '$' + v.toFixed(2));
+  const fmtTok = (v) => v == null ? '—' : v >= 1e9 ? (v/1e9).toFixed(2) + 'B' : v >= 1e6 ? (v/1e6).toFixed(1) + 'M' : v >= 1e3 ? (v/1e3).toFixed(1) + 'K' : String(Math.round(v));
+  const fmtPct = (v) => v == null || !isFinite(v) ? '—' : Math.round(v * 100) + '%';
+  // Logical day boundaries (timezone + day-start hour) are decided by the server.
+  const todayLogical = () => (state.data && state.data.today) || new Date().toISOString().slice(0, 10);
+  const dayLabel = () => { const c = (state.data && state.data.config) || {}; const h = c.day_start_hour || 0;
+    const hh = h === 0 ? 'midnight' : (h % 12 || 12) + (h < 12 ? ' am' : ' pm');
+    return `days start at ${hh} ${(c.timezone || 'UTC').split('/').pop().replace(/_/g, ' ')} time`; };
+  const addDays = (iso, n) => { const d = new Date(iso + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+  const ago = (iso) => { if (!iso) return 'never'; const m = Math.round((Date.now() - new Date(iso)) / 60000); return m < 1 ? 'just now' : m < 60 ? m + ' min ago' : m < 1440 ? Math.round(m/60) + ' h ago' : Math.round(m/1440) + ' d ago'; };
+  const esc = (s) => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  const tokens = (r) => r.uncached + r.cache_read + r.cache_5m + r.cache_1h + r.output;
+
+  // ---- build "facts": one normalized row per (day, dimensions)
+  function apiFacts(d) {
+    const facts = [];
+    const today = todayLogical(), yesterday = addDays(today, -1);
+    const days = new Set([...Object.keys(d.api_days), ...Object.keys(d.live_days)]);
+    for (const day of days) {
+      let rows = d.api_days[day] || [];
+      let estimated = false;
+      const live = d.live_days[day];
+      if (live && (day === today || (day === yesterday && rows.length === 0))) { rows = live; estimated = true; }
+      for (const r of rows) {
+        const k = d.keys[r.api_key_id];
+        const app = k ? k.display : (r.api_key_id ? r.api_key_id.slice(0, 14) + '…'
+                   : r.product === 'claude_code' ? 'Claude Code (no key)' : 'No API key (console / other)');
+        const ws = r.workspace_id ? (d.workspaces[r.workspace_id] || r.workspace_id) : 'Default workspace';
+        facts.push({ day, app, model: r.model || (r.cost_by_type && Object.keys(r.cost_by_type)[0]) || 'other',
+          product: r.product || 'other', workspace: ws, source: SRC_API, billing: BILL_API, estimated,
+          uncached: r.uncached, cache_read: r.cache_read, cache_5m: r.cache_5m, cache_1h: r.cache_1h,
+          output: r.output, requests: r.requests, cost: r.cost_usd });
+      }
+    }
+    return facts;
+  }
+  const isSdk = (r) => (r.entrypoint || '').startsWith('sdk');
+  // Interactive Claude Code sessions only (the Agent SDK ones belong to apps).
+  function localFacts(d) {
+    const facts = [];
+    for (const [day, rows] of Object.entries(d.local_days)) {
+      for (const r of rows) if (!isSdk(r)) facts.push({ day, project: r.project, model: r.model, estimated: true,
+        uncached: r.uncached, cache_read: r.cache_read, cache_5m: r.cache_5m, cache_1h: r.cache_1h,
+        output: r.output, requests: r.requests, cost: r.cost_usd });
+    }
+    return facts;
+  }
+  // Agent SDK usage: transcripts the SDK leaves under ~/.claude/projects, plus per-call logs apps
+  // write to ~/.claude/app-usage. Each row says whether it ran on the subscription login or an API
+  // key; API-key rows are left out when the Analytics API is connected, since it has them with billed cost.
+  function sdkFacts(d) {
+    const facts = [];
+    const tok = (r) => ({ uncached: r.uncached, cache_read: r.cache_read, cache_5m: r.cache_5m, cache_1h: r.cache_1h,
+      output: r.output, requests: r.requests, cost: r.cost_usd, estimated: true, workspace: 'Local machine', product: 'agent_sdk' });
+    const coveredByApi = (r) => r.billing === 'api' && d.status.has_admin_key;
+    for (const [day, rows] of Object.entries(d.local_days)) {
+      for (const r of rows) if (isSdk(r) && !coveredByApi(r)) facts.push({ day, app: r.project, model: r.model, source: SRC_SDK,
+        billing: r.billing === 'api' ? BILL_API : BILL_SUB, ...tok(r) });
+    }
+    for (const [day, rows] of Object.entries(d.app_log_days || {})) {
+      for (const r of rows) if (!coveredByApi(r)) facts.push({ day, app: r.app, model: r.model, source: r.source === 'api' ? SRC_API : SRC_SDK,
+        billing: r.billing === 'api' ? BILL_API : BILL_SUB, ...tok(r) });
+    }
+    return facts;
+  }
+
+  function rangeDays() {
+    const today = todayLogical();
+    let start;
+    if (state.range === 'mtd') start = today.slice(0, 8) + '01';
+    else start = addDays(today, -(parseInt(state.range, 10) - 1));
+    const days = [];
+    for (let d = start; d <= today; d = addDays(d, 1)) days.push(d);
+    return days;
+  }
+
+  // stable color per entity: ranked by all-time cost (never by rank within the current filter)
+  function colorMap(facts, dim) {
+    const tot = {};
+    for (const f of facts) tot[f[dim]] = (tot[f[dim]] || 0) + (f.cost || 0) + tokens(f) * 1e-9;
+    const order = Object.keys(tot).sort((a, b) => tot[b] - tot[a]);
+    const map = {};
+    order.forEach((name, i) => { map[name] = i < SLOTS.length ? SLOTS[i] : null; });
+    return { map, order };
+  }
+
+  function sumBy(facts, keyFn) {
+    const out = {};
+    for (const f of facts) {
+      const k = keyFn(f);
+      const o = out[k] || (out[k] = { cost: 0, costKnown: false, uncached: 0, cache_read: 0, cache_write: 0, output: 0, requests: 0, estimated: false });
+      if (f.cost != null) { o.cost += f.cost; o.costKnown = true; }
+      o.uncached += f.uncached; o.cache_read += f.cache_read; o.cache_write += f.cache_5m + f.cache_1h; o.output += f.output;
+      o.requests += f.requests; o.estimated = o.estimated || f.estimated; o.sub = o.sub || f.billing === BILL_SUB;
+    }
+    return out;
+  }
+
+  // ---- charts
+  function baseOpts(extra) {
+    Chart.defaults.font.family = 'system-ui, -apple-system, "Segoe UI", sans-serif';
+    Chart.defaults.color = css('--muted');
+    return Object.assign({
+      responsive: true, maintainAspectRatio: false, animation: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { position: 'bottom', labels: { boxWidth: 10, boxHeight: 10, borderRadius: 2, useBorderRadius: true, color: css('--ink-2'), padding: 14 } },
+        tooltip: { backgroundColor: css('--ink'), titleColor: css('--surface'), bodyColor: css('--surface'), padding: 10, boxPadding: 4, usePointStyle: true },
+      },
+      scales: {
+        x: { stacked: true, grid: { display: false }, border: { color: css('--axis') }, ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 12 } },
+        y: { stacked: true, grid: { color: css('--grid') }, border: { display: false }, ticks: { font: { size: 11 } } },
+      },
+    }, extra || {});
+  }
+  function destroy(id) { if (state.charts[id]) { state.charts[id].destroy(); delete state.charts[id]; } }
+  function stackedBar(id, labels, datasets, yFmt, tooltipFmt) {
+    destroy(id);
+    const surface = css('--surface');
+    datasets.forEach(ds => Object.assign(ds, { borderColor: surface, borderWidth: 1, borderRadius: 3, borderSkipped: false, barPercentage: 0.78, categoryPercentage: 0.9 }));
+    const opts = baseOpts();
+    opts.scales.y.ticks.callback = yFmt;
+    opts.scales.y.beginAtZero = true;
+    if (!datasets.some(ds => ds.data.some(v => v > 0))) opts.scales.y.suggestedMax = 10;
+    opts.plugins.tooltip.callbacks = {
+      label: (c) => c.raw ? ` ${c.dataset.label}: ${tooltipFmt(c.raw)}` : null,
+      footer: (items) => { const t = items.reduce((s, i) => s + (i.raw || 0), 0); return items.length > 1 ? 'Total: ' + tooltipFmt(t) : ''; },
+    };
+    opts.plugins.tooltip.filter = (c) => c.raw;
+    state.charts[id] = new Chart(document.getElementById(id), { type: 'bar', data: { labels, datasets }, options: opts });
+  }
+  function hBar(id, labels, values, colors, fmt) {
+    destroy(id);
+    const opts = baseOpts({ indexAxis: 'y', interaction: { mode: 'nearest', axis: 'y', intersect: false } });
+    opts.plugins.legend.display = false;
+    opts.scales = {
+      x: { grid: { color: css('--grid') }, border: { display: false }, ticks: { callback: fmt, font: { size: 11 }, maxTicksLimit: 6 } },
+      y: { grid: { display: false }, border: { color: css('--axis') }, ticks: { color: css('--ink-2'), autoSkip: false, font: { size: 12 } } },
+    };
+    opts.plugins.tooltip.callbacks = { label: (c) => ' ' + fmt(c.raw) };
+    state.charts[id] = new Chart(document.getElementById(id), { type: 'bar', data: { labels, datasets: [{ data: values, backgroundColor: colors, borderRadius: 3, borderSkipped: false, barThickness: 16 }] }, options: opts });
+  }
+
+  function sparkline(values, color) {
+    const w = 84, h = 22, max = Math.max(...values, 1e-9);
+    const pts = values.map((v, i) => `${(i / Math.max(values.length - 1, 1) * (w - 2) + 1).toFixed(1)},${(h - 2 - (v / max) * (h - 4)).toFixed(1)}`);
+    return `<svg class="spark" width="${w}" height="${h}" aria-hidden="true"><polyline fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="${pts.join(' ')}"/></svg>`;
+  }
+
+  // ---- render
+  function render() {
+    const d = state.data; if (!d) return;
+    const isApi = state.tab === 'apps';   // the apps view: API-key usage plus Agent SDK usage
+    const facts = isApi ? [...apiFacts(d), ...sdkFacts(d)] : localFacts(d);
+    const dim = state.groupBy;
+    const days = rangeDays();
+    const daySet = new Set(days);
+    const inRange = facts.filter(f => daySet.has(f.day));
+    const { map: colors } = colorMap(facts, dim);
+    const color = (name) => colors[name] ? css(colors[name]) : css('--neutral');
+    const groupName = (GROUPS[state.tab].find(g => g[0] === dim) || [])[1] || dim;
+
+    // status + notices
+    const st = d.status;
+    const bits = [];
+    if (isApi) {
+      if (!st.has_admin_key) bits.push('No Admin API key configured');
+      else if (st.analytics.mode === 'legacy') {
+        bits.push('token counts from the usage report, pulled ' + ago(st.analytics.last_ok) + (st.analytics.running ? ' (refreshing…)' : ''));
+        bits.push('costs estimated at list prices');
+      } else {
+        bits.push('API cost data as of ' + (st.analytics.data_refreshed_at ? new Date(st.analytics.data_refreshed_at).toLocaleString() : 'unknown') + (st.analytics.running ? ' (refreshing…)' : ''));
+        bits.push('live token counts ' + ago(st.live.last_ok));
+      }
+      const logs = st.app_logs || {};
+      bits.push(`Agent SDK usage from local transcripts and ${logs.files || 0} app log${logs.files === 1 ? '' : 's'}, scanned ${ago(st.local.last_ok)}`);
+    } else {
+      bits.push(`${st.local.files} local transcripts, scanned ${ago(st.local.last_ok)}`);
+      bits.push('cost estimated from list prices');
+    }
+    bits.push('page updated ' + ago(d.generated_at));
+
+    let notice = '';
+    if (isApi && !st.has_admin_key) {
+      notice = `<strong>Connect your Anthropic organization to see your apps' usage.</strong>
+        <ol>
+          <li>In the Claude Console, open <a href="https://platform.claude.com/settings/admin-keys" target="_blank" rel="noopener">Settings → Admin keys</a> and create an admin key (requires an organization with you as admin; individual accounts can create one at <a href="https://platform.claude.com/settings/organization" target="_blank" rel="noopener">Settings → Organization</a>).</li>
+          <li>Put it in <code>.env</code> next to <code>server.py</code> as <code>ANTHROPIC_ADMIN_KEY=sk-ant-admin01-…</code></li>
+          <li>Restart the server.</li>
+        </ol>`;
+    } else {
+      // A single failed poll (a DNS blip, a timeout) is not worth a red banner while the data is fresh:
+      // only sources that have been failing past their grace period are shown. Rejected keys always are.
+      const minutesAgo = (iso) => iso ? (Date.now() - new Date(iso)) / 60000 : Infinity;
+      const sources = isApi
+        ? [['Analytics API', st.analytics, 240], ['Live usage report', st.live, 20], ['Key names', st.names, 24 * 60],
+           ['Local transcripts', st.local, 10], ['App usage logs', st.app_logs || {}, 10]]
+        : [['Local transcripts', st.local, 10]];
+      const failing = sources.filter(([, src]) => src.last_error);
+      const stale = failing.filter(([, src, grace, ]) => minutesAgo(src.last_ok) > grace || /HTTP (401|403)/.test(src.last_error));
+      if (stale.length) notice = stale.map(([name, src]) => `<div class="err"><strong>${name}:</strong> ${esc(src.last_error)}</div>`).join('') +
+        (stale.some(([, src]) => /HTTP (401|403)/.test(src.last_error)) ? '<div>The key was rejected. Admin API keys need an organization (not an individual account) and the admin role.</div>' : '');
+      const transient = failing.filter(f => !stale.includes(f));
+      if (transient.length) bits.push(transient.map(([name]) => name.toLowerCase()).join(', ') + ': last poll failed, retrying');
+    }
+    document.getElementById('status').textContent = bits.join(' · ');
+    document.getElementById('notice').innerHTML = notice ? `<div class="notice">${notice}</div>` : '';
+
+    // KPIs
+    const today = todayLogical();
+    const costOver = (from, to) => { let s = 0, known = false, est = false; for (const f of facts) if (f.day >= from && f.day <= to && f.cost != null) { s += f.cost; known = true; est = est || f.estimated; } return { s, known, est }; };
+    const t0 = costOver(today, today), w1 = costOver(addDays(today, -6), today), w0 = costOver(addDays(today, -13), addDays(today, -7));
+    const m1 = costOver(addDays(today, -29), today), mtd = costOver(today.slice(0, 8) + '01', today);
+    const tot = sumBy(inRange, () => 'all').all || { cost: 0, uncached: 0, cache_read: 0, cache_write: 0, output: 0, requests: 0 };
+    const totTok = tot.uncached + tot.cache_read + tot.cache_write + tot.output;
+    const wk = w0.s > 0 ? (w1.s - w0.s) / w0.s : null;
+    const tile = (label, value, delta, cls) => `<div class="tile"><div class="label">${label}</div><div class="value ${cls || ''}">${value}</div>${delta ? `<div class="delta ${delta.cls || ''}">${delta.text}</div>` : ''}</div>`;
+    const byBilling = sumBy(inRange, f => f.billing);
+    const billed = (byBilling[BILL_API] || {}).cost || 0, sub = (byBilling[BILL_SUB] || {}).cost || 0;
+    document.getElementById('kpis').innerHTML =
+      tile('Today so far', fmtUSD(t0.s), { text: !isApi ? 'estimated at list prices' : t0.est ? 'partly estimated from token counts' : 'from billing data' }) +
+      tile('Last 7 days', fmtUSD(w1.s), wk == null ? null : { text: (wk >= 0 ? '+' : '') + Math.round(wk * 100) + '% vs prior 7 days', cls: wk > 0.05 ? 'up' : wk < -0.05 ? 'down' : '' }) +
+      tile('Last 30 days', fmtUSD(m1.s), { text: 'avg ' + fmtUSD(m1.s / 30) + ' per day' }) +
+      tile('Month to date', fmtUSD(mtd.s), { text: new Date(today + 'T12:00:00Z').toLocaleString('en', { month: 'long', timeZone: 'UTC' }) }) +
+      (isApi ? tile('Billed to API', fmtUSD(billed), { text: 'in range, via API keys' }) +
+               tile('On subscription', fmtUSD(sub), { text: 'in range, Agent SDK, list-price value' }) : '') +
+      tile('Tokens in range', fmtTok(totTok), { text: fmtPct(totTok ? tot.cache_read / totTok : null) + ' served from cache' }) +
+      tile('Requests in range', tot.requests ? tot.requests.toLocaleString() : '—', { text: tot.requests ? fmtUSD(tot.cost / tot.requests) + ' per request' : (isApi ? 'not reported for live/estimated days' : 'assistant messages') });
+
+    // daily bars by group, in dollars or tokens (the card's own toggle)
+    const inTokens = state.costMetric === 'tokens';
+    const tokensOf = (g) => g ? g.uncached + g.cache_read + g.cache_write + g.output : 0;
+    const metric = (g) => !g ? 0 : inTokens ? tokensOf(g) : g.cost;
+    const fmtMetric = inTokens ? fmtTok : fmtUSD;
+    document.getElementById('costTitle').textContent = `Daily ${inTokens ? 'tokens' : 'cost'} by ` + groupName.toLowerCase();
+    const byDayGroup = sumBy(inRange, f => f.day + '|' + f[dim]);
+    const groupTotals = sumBy(inRange, f => f[dim]);
+    const ranked = Object.keys(groupTotals).sort((a, b) => metric(groupTotals[b]) - metric(groupTotals[a]));
+    const top = ranked.filter(n => colors[n]).slice(0, SLOTS.length);
+    const others = ranked.filter(n => !top.includes(n));
+    const seriesFor = (names, label, col) => ({ label, backgroundColor: col, data: days.map(day => names.reduce((s, n) => s + metric(byDayGroup[day + '|' + n]), 0)) });
+    const costSets = top.map(n => seriesFor([n], n, color(n)));
+    if (others.length) costSets.push(seriesFor(others, 'Other (' + others.length + ')', css('--neutral')));
+    const labels = days.map(dd => dd.slice(5));
+    const byDay = sumBy(inRange, f => f.day);
+    stackedBar('costChart', labels, costSets, fmtMetric, inTokens ? (v) => fmtTok(v) + ' tokens' : fmtUSD);
+
+    // daily tokens by type
+    stackedBar('tokChart', labels, TOKEN_TYPES.map(([k, label, slot]) => ({ label, backgroundColor: css(slot), data: days.map(day => (byDay[day] || {})[k] || 0) })), fmtTok, (v) => fmtTok(v) + ' tokens');
+
+    // cost by model (or by project/app when grouping by model)
+    const secondDim = dim === 'model' ? (isApi ? 'app' : 'project') : 'model';
+    document.getElementById('modelTitle').textContent = 'Cost by ' + ((GROUPS[state.tab].find(g => g[0] === secondDim) || [])[1] || secondDim).toLowerCase();
+    const byModel = sumBy(inRange, f => f[secondDim]);
+    const mRank = Object.keys(byModel).sort((a, b) => metric(byModel[b]) - metric(byModel[a])).slice(0, 10);
+    const { map: mColors } = colorMap(facts, secondDim);
+    hBar('modelChart', mRank, mRank.map(m => metric(byModel[m])), mRank.map(m => mColors[m] ? css(mColors[m]) : css('--neutral')), fmtMetric);
+
+    // group table
+    document.getElementById('tableTitle').textContent = groupName + 's';
+    const sparkDays = []; for (let i = 13; i >= 0; i--) sparkDays.push(addDays(today, -i));
+    const byDayGroupAll = sumBy(facts.filter(f => f.day >= sparkDays[0]), f => f.day + '|' + f[dim]);
+    const totalCost = ranked.reduce((s, n) => s + groupTotals[n].cost, 0);
+    let html = `<thead><tr><th>${esc(groupName)}</th><th>Cost</th><th>Share</th><th>Tokens</th><th>Input</th><th>Cache read</th><th>Output</th><th>Requests</th><th>Cache hit</th><th>14-day trend</th></tr></thead><tbody>`;
+    for (const n of ranked) {
+      const g = groupTotals[n], tk = g.uncached + g.cache_read + g.cache_write + g.output;
+      const trend = sparkDays.map(day => (byDayGroupAll[day + '|' + n] || {}).cost || 0);
+      const pill = !isApi ? '' : g.sub ? (dim === 'billing' || dim === 'source' ? '' : '<span class="pill">incl. subscription, est.</span>')
+                 : g.estimated && st.analytics.mode !== 'legacy' ? '<span class="pill">partly estimated</span>' : '';
+      html += `<tr><td class="name"><span class="sw" style="background:${color(n)}"></span>${esc(n)}${pill}</td>
+        <td>${g.costKnown ? fmtUSD(g.cost) : '—'}</td><td>${fmtPct(totalCost ? g.cost / totalCost : null)}</td><td>${fmtTok(tk)}</td><td>${fmtTok(g.uncached)}</td><td>${fmtTok(g.cache_read)}</td><td>${fmtTok(g.output)}</td>
+        <td>${g.requests ? g.requests.toLocaleString() : '—'}</td><td>${fmtPct(tk ? g.cache_read / (g.uncached + g.cache_read + g.cache_write) : null)}</td><td>${sparkline(trend, color(n))}</td></tr>`;
+    }
+    html += `<tr><td><strong>Total</strong></td><td><strong>${fmtUSD(totalCost)}</strong></td><td></td><td>${fmtTok(totTok)}</td><td>${fmtTok(tot.uncached)}</td><td>${fmtTok(tot.cache_read)}</td><td>${fmtTok(tot.output)}</td><td>${tot.requests ? tot.requests.toLocaleString() : '—'}</td><td></td><td></td></tr></tbody>`;
+    document.getElementById('groupTable').innerHTML = ranked.length ? html : '<tr><td class="empty">No data in this range yet.</td></tr>';
+
+    // daily table
+    let dh = `<thead><tr><th>Day</th><th>Cost</th><th>Tokens</th><th>Input</th><th>Cache write</th><th>Cache read</th><th>Output</th><th>Requests</th><th>Top ${esc(groupName.toLowerCase())}</th></tr></thead><tbody>`;
+    for (const day of [...days].reverse()) {
+      const g = byDay[day]; if (!g) continue;
+      const topN = ranked.reduce((best, n) => { const c = metric(byDayGroup[day + '|' + n]); return c > best[1] ? [n, c] : best; }, ['', 0])[0];
+      dh += `<tr><td>${day}${g.estimated ? '<span class="pill">est.</span>' : ''}</td><td>${fmtUSD(g.cost)}</td><td>${fmtTok(g.uncached + g.cache_read + g.cache_write + g.output)}</td><td>${fmtTok(g.uncached)}</td><td>${fmtTok(g.cache_write)}</td><td>${fmtTok(g.cache_read)}</td><td>${fmtTok(g.output)}</td><td>${g.requests ? g.requests.toLocaleString() : '—'}</td><td class="name">${esc(topN)}</td></tr>`;
+    }
+    document.getElementById('dailyTable').innerHTML = dh + '</tbody>';
+
+    document.getElementById('foot').textContent = isApi
+      ? (st.analytics.mode === 'legacy'
+        ? 'Token counts come from Anthropic\'s usage report (fresh within about 5 minutes) per API key and model. Costs are estimated at list prices (input, output, cache read, cache writes); the Console\'s Cost page has the billed figures. An Admin API key would switch this to billed costs. ' + dayLabel() + '.'
+        : 'API-key usage: costs for completed days come from Anthropic billing data (post-discount, refreshed about every 4 hours); today, and any day billing has not yet covered, are estimated from live token counts at list prices. Agent SDK usage runs on the Claude subscription, which is not billed per token: it is read from the SDK\'s local transcripts and from per-call logs apps write to ~/.claude/app-usage, and valued at list prices. ' + dayLabel() + '.')
+      : 'Interactive Claude Code sessions, parsed from ~/.claude/projects transcripts (Agent SDK sessions are under Apps). Sessions run on an API key rather than the login are included here too, and also appear under Apps with billed cost. Costs are estimates at list prices (input, output, cache read, 5-minute and 1-hour cache writes), which matches what Claude Code reports with /cost. Subscription plans are not billed per token; this shows what the usage would cost on the API. Helper-model calls (titles, classifiers) are not in the transcripts. ' + dayLabel() + '.';
+    document.getElementById('dailyHint').textContent = (inTokens ? 'Tokens of all types per day (' : 'USD per day (') + dayLabel() + '). Hover a bar for the breakdown.';
+  }
+
+  function setGroupOptions() {
+    const sel = document.getElementById('groupBy');
+    sel.innerHTML = GROUPS[state.tab].map(([v, l]) => `<option value="${v}">${l}</option>`).join('');
+    if (!GROUPS[state.tab].some(g => g[0] === state.groupBy)) state.groupBy = GROUPS[state.tab][0][0];
+    sel.value = state.groupBy;
+  }
+
+  async function load() {
+    try {
+      const r = await fetch('/api/summary', { cache: 'no-store' });
+      state.data = await r.json();
+      render();
+    } catch (e) {
+      document.getElementById('status').textContent = 'Could not reach the server: ' + e.message;
+    }
+  }
+
+  document.getElementById('tabs').addEventListener('click', (e) => {
+    const b = e.target.closest('button'); if (!b) return;
+    state.tab = b.dataset.tab;
+    for (const x of e.currentTarget.querySelectorAll('button')) x.setAttribute('aria-pressed', x === b);
+    setGroupOptions(); render();
+  });
+  document.getElementById('ranges').addEventListener('click', (e) => {
+    const b = e.target.closest('button'); if (!b) return;
+    state.range = b.dataset.range;
+    for (const x of e.currentTarget.querySelectorAll('button')) x.setAttribute('aria-pressed', x === b);
+    render();
+  });
+  document.getElementById('groupBy').addEventListener('change', (e) => { state.groupBy = e.target.value; render(); });
+  document.getElementById('costMetric').addEventListener('click', (e) => {
+    const b = e.target.closest('button'); if (!b) return;
+    state.costMetric = b.dataset.metric;
+    for (const x of e.currentTarget.querySelectorAll('button')) x.setAttribute('aria-pressed', x === b);
+    render();
+  });
+
+  document.getElementById('refresh').addEventListener('click', async () => { await fetch('/api/refresh'); setTimeout(load, 4000); setTimeout(load, 15000); });
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', render);
+
+  setGroupOptions();
+  load();
+  setInterval(load, 60000);
+})();
+</script>
+</body>
+</html>

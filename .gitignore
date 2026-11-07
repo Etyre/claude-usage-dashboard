@@ -1,0 +1,11 @@
+# secrets / personal config (committed twins: .env.example, config.example.json)
+.env
+config.json
+# state and logs
+cache/
+*.log
+# python / editor / os
+__pycache__/
+*.pyc
+.venv/
+.DS_Store

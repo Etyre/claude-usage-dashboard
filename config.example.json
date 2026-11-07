@@ -1,0 +1,15 @@
+{
+  "port": 8787,
+  "history_days": 90,
+  "revisit_days": 10,
+  "analytics_refresh_min": 30,
+  "live_refresh_min": 5,
+  "local_refresh_sec": 60,
+  "claude_projects_dir": "~/.claude/projects",
+  "timezone": "America/Los_Angeles",
+  "day_start_hour": 4,
+  "app_names": {
+    "Key name as shown in the Console": "Friendly app name",
+    "apikey_01ExampleIdGoesHere": "Another app"
+  }
+}
