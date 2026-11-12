@@ -140,6 +140,7 @@ details summary { cursor: pointer; color: var(--ink-2); font-size: 13px; padding
 
 <script>
 (() => {
+  const OTHER_SHARE = 0.05;  // groups are folded into "Other" only while their combined share stays under this
   const SLOTS = ['--s1','--s2','--s3','--s4','--s5','--s6','--s7','--s8','--s9','--s10','--s11','--s12'];
   const TOKEN_TYPES = [
     ['uncached', 'Input (uncached)', '--s1'],
@@ -154,7 +155,8 @@ details summary { cursor: pointer; color: var(--ink-2); font-size: 13px; padding
   const SRC_API = 'API key', SRC_SDK = 'Agent SDK', BILL_API = 'Billed to API', BILL_SUB = 'Subscription';
   const state = { tab: 'apps', range: '30', groupBy: 'app', costMetric: 'cost', data: null, charts: {} };
 
-  const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+  // a palette slot name ('--s3') resolves to its themed value; a literal color passes through
+  const css = (v) => v.startsWith('--') ? getComputedStyle(document.documentElement).getPropertyValue(v).trim() : v;
   const fmtUSD = (v) => v == null ? '—' : (Math.abs(v) >= 100 ? '$' + Math.round(v).toLocaleString() : '$' + v.toFixed(2));
   const fmtTok = (v) => v == null ? '—' : v >= 1e9 ? (v/1e9).toFixed(2) + 'B' : v >= 1e6 ? (v/1e6).toFixed(1) + 'M' : v >= 1e3 ? (v/1e3).toFixed(1) + 'K' : String(Math.round(v));
   const fmtPct = (v) => v == null || !isFinite(v) ? '—' : Math.round(v * 100) + '%';
@@ -231,13 +233,15 @@ details summary { cursor: pointer; color: var(--ink-2); font-size: 13px; padding
     return days;
   }
 
-  // stable color per entity: ranked by all-time cost (never by rank within the current filter)
+  // stable color per entity: ranked by all-time cost (never by rank within the current filter).
+  // Every entity gets one: the 12 palette slots first, then hues stepped by the golden angle,
+  // so that only the bottom-5% tail (see OTHER_SHARE) is ever drawn in neutral grey.
   function colorMap(facts, dim) {
     const tot = {};
     for (const f of facts) tot[f[dim]] = (tot[f[dim]] || 0) + (f.cost || 0) + tokens(f) * 1e-9;
     const order = Object.keys(tot).sort((a, b) => tot[b] - tot[a]);
     const map = {};
-    order.forEach((name, i) => { map[name] = i < SLOTS.length ? SLOTS[i] : null; });
+    order.forEach((name, i) => { map[name] = i < SLOTS.length ? SLOTS[i] : `hsl(${Math.round((i - SLOTS.length) * 137.5 + 20) % 360} 55% 50%)`; });
     return { map, order };
   }
 
@@ -393,8 +397,13 @@ details summary { cursor: pointer; color: var(--ink-2); font-size: 13px; padding
     const byDayGroup = sumBy(inRange, f => f.day + '|' + f[dim]);
     const groupTotals = sumBy(inRange, f => f[dim]);
     const ranked = Object.keys(groupTotals).sort((a, b) => metric(groupTotals[b]) - metric(groupTotals[a]));
-    const top = ranked.filter(n => colors[n]).slice(0, SLOTS.length);
-    const others = ranked.filter(n => !top.includes(n));
+    // "Other" is only the tail: the smallest groups that together make up at most OTHER_SHARE of
+    // the range's total. A tail of one is shown by name, since folding it would hide it for nothing.
+    const grand = ranked.reduce((s, n) => s + metric(groupTotals[n]), 0);
+    let cut = ranked.length, tail = 0;
+    while (grand > 0 && cut > 0 && tail + metric(groupTotals[ranked[cut - 1]]) <= grand * OTHER_SHARE) tail += metric(groupTotals[ranked[--cut]]);
+    if (ranked.length - cut < 2) cut = ranked.length;
+    const top = ranked.slice(0, cut), others = ranked.slice(cut);
     const seriesFor = (names, label, col) => ({ label, backgroundColor: col, data: days.map(day => names.reduce((s, n) => s + metric(byDayGroup[day + '|' + n]), 0)) });
     const costSets = top.map(n => seriesFor([n], n, color(n)));
     if (others.length) costSets.push(seriesFor(others, 'Other (' + others.length + ')', css('--neutral')));
