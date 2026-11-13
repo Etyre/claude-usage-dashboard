@@ -19,7 +19,7 @@ Or run it in the foreground: `python3 server.py`. No dependencies beyond Python 
 `index.html`, `/api/summary` (the whole in-memory snapshot as JSON) and `/api/refresh` (kick every
 source now), plus one background thread per data source that re-pulls on its own interval and
 writes what it fetched to `cache/`. The page polls `/api/summary` and does all grouping and
-charting client-side. In the daily chart a group is folded into the grey "Other" series only if it is in the tail: the smallest groups that together make up at most 5% of the selected range's total (`OTHER_SHARE` in `index.html`). Every other group gets its own color, however many there are. Days are bucketed in the configured timezone starting at `day_start_hour`
+charting client-side. In the daily chart a group is folded into the grey "Other" series only if it is a sliver: taking groups from the smallest up, a group joins "Other" while "Other" stays at most 5% of the selected range's total and, on every single day, at most 5% of the tallest bar (`OTHER_SHARE` in `index.html`). Every other group gets its own color, however many there are. Days are bucketed in the configured timezone starting at `day_start_hour`
 (default 4 am America/Los_Angeles); the cache files record which timezone/day-start they were
 built with and are discarded when that changes.
 
@@ -160,3 +160,10 @@ Outside this project:
   purpose; the first refresh after that re-parses every transcript.
 - `python3 server.py --test` and the launchd instance may both write `cache/`; that is safe because
   every write is atomic (`.tmp` + rename) and the running instance only reads the cache at startup.
+- When the agent starts before the network is up (boot, wake), the first key-names fetch fails with
+  "No route to host". Names are fetched only every six hours, so the page showed a red "Key names"
+  banner all that time even though the cached names were fine. A failed names fetch is now retried
+  every five minutes (2026-11-13).
+- `launchctl bootout` returns before the old job is really gone, and a `bootstrap` straight after
+  it fails with "Bootstrap failed: 5: Input/output error", leaving the dashboard stopped.
+  `install.sh` now waits for the job to disappear and retries once (2026-11-13).

@@ -395,20 +395,30 @@ details summary { cursor: pointer; color: var(--ink-2); font-size: 13px; padding
     const fmtMetric = inTokens ? fmtTok : fmtUSD;
     document.getElementById('costTitle').textContent = `Daily ${inTokens ? 'tokens' : 'cost'} by ` + groupName.toLowerCase();
     const byDayGroup = sumBy(inRange, f => f.day + '|' + f[dim]);
+    const byDay = sumBy(inRange, f => f.day);
     const groupTotals = sumBy(inRange, f => f[dim]);
     const ranked = Object.keys(groupTotals).sort((a, b) => metric(groupTotals[b]) - metric(groupTotals[a]));
-    // "Other" is only the tail: the smallest groups that together make up at most OTHER_SHARE of
-    // the range's total. A tail of one is shown by name, since folding it would hide it for nothing.
+    // "Other" is only ever a sliver. Taking groups from the smallest up, one is folded in only if
+    // Other then still totals at most OTHER_SHARE of the range AND, on every single day, at most
+    // OTHER_SHARE of the tallest bar. The second test keeps a group that is small over the range
+    // but large on one day (a one-off $40 run) in its own color instead of a big grey block.
+    // An Other of one is shown by name, since folding it would hide it for nothing.
     const grand = ranked.reduce((s, n) => s + metric(groupTotals[n]), 0);
-    let cut = ranked.length, tail = 0;
-    while (grand > 0 && cut > 0 && tail + metric(groupTotals[ranked[cut - 1]]) <= grand * OTHER_SHARE) tail += metric(groupTotals[ranked[--cut]]);
-    if (ranked.length - cut < 2) cut = ranked.length;
-    const top = ranked.slice(0, cut), others = ranked.slice(cut);
+    const tallest = Math.max(0, ...days.map(day => metric(byDay[day])));
+    let others = [], tail = 0; const tailDay = {};
+    for (const n of [...ranked].reverse()) {
+      const v = metric(groupTotals[n]);
+      if (!(grand > 0) || tail + v > grand * OTHER_SHARE) break;
+      if (days.some(day => (tailDay[day] || 0) + metric(byDayGroup[day + '|' + n]) > tallest * OTHER_SHARE)) continue;
+      for (const day of days) tailDay[day] = (tailDay[day] || 0) + metric(byDayGroup[day + '|' + n]);
+      tail += v; others.push(n);
+    }
+    if (others.length < 2) others = [];
+    const top = ranked.filter(n => !others.includes(n));
     const seriesFor = (names, label, col) => ({ label, backgroundColor: col, data: days.map(day => names.reduce((s, n) => s + metric(byDayGroup[day + '|' + n]), 0)) });
     const costSets = top.map(n => seriesFor([n], n, color(n)));
     if (others.length) costSets.push(seriesFor(others, 'Other (' + others.length + ')', css('--neutral')));
     const labels = days.map(dd => dd.slice(5));
-    const byDay = sumBy(inRange, f => f.day);
     stackedBar('costChart', labels, costSets, fmtMetric, inTokens ? (v) => fmtTok(v) + ' tokens' : fmtUSD);
 
     // daily tokens by type

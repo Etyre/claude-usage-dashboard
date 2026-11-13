@@ -754,7 +754,13 @@ class Store:
         loop(self.refresh_local, self.cfg["local_refresh_sec"])
         loop(self.refresh_app_logs, self.cfg["local_refresh_sec"], first_delay=3)
         if self.api:
-            loop(self.refresh_names, 6 * 3600)
+            # Names change rarely, but a failed fetch (typically no network yet right after boot or
+            # wake) is retried soon, or the page would show its error banner for six hours.
+            def names_loop():
+                while True:
+                    self.refresh_names()
+                    time.sleep(300 if self.status["names"]["last_error"] else 6 * 3600)
+            threading.Thread(target=names_loop, daemon=True).start()
             loop(self.refresh_live, self.cfg["live_refresh_min"] * 60, first_delay=1)
             loop(self.refresh_analytics, self.cfg["analytics_refresh_min"] * 60, first_delay=2)
 

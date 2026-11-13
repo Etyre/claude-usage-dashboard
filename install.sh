@@ -11,6 +11,10 @@ LOG="$HOME/Library/Logs/claude-usage-dashboard.log"
 mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs" "$HOME/Library/Application Support/claude-usage-dashboard"
 sed -e "s|__ROOT__|$ROOT|g" -e "s|__PYTHON__|$PY|g" -e "s|__LOG__|$LOG|g" "$ROOT/$LABEL.plist" > "$DEST"
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
-launchctl bootstrap "gui/$(id -u)" "$DEST"
+# bootout returns before the old job is gone; bootstrapping too early fails with
+# "Bootstrap failed: 5: Input/output error" and leaves the dashboard stopped. Wait, then retry.
+i=0
+while launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1 && [ $i -lt 20 ]; do sleep 0.5; i=$((i+1)); done
+launchctl bootstrap "gui/$(id -u)" "$DEST" 2>/dev/null || { sleep 2; launchctl bootstrap "gui/$(id -u)" "$DEST"; }
 echo "Installed. Dashboard: http://localhost:$(python3 -c 'import json,os; p=os.path.join("'"$ROOT"'","config.json"); print(json.load(open(p)).get("port",8787) if os.path.exists(p) else 8787)')"
 echo "Logs: $LOG   Uninstall: ./uninstall.sh"
