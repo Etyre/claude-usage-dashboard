@@ -246,6 +246,14 @@ class AdminAPI:
                     time.sleep(min(wait, 30))
                     continue
                 raise AdminAPIError(e.code, body)
+            except (urllib.error.URLError, TimeoutError) as e:
+                # The usage report is sometimes slow on a cold query (60 s+, then 0.5 s when asked
+                # again, seen 2026-11-14), and the network drops briefly after wake. Ask again
+                # instead of failing the whole refresh and waiting for the next cycle.
+                if attempt == 3:
+                    raise
+                log(f"{path}: {e}; retrying")
+                time.sleep(2 ** attempt)
         raise AdminAPIError(429, "rate limited after retries")
 
     def paginate(self, path, params, beta=None, page_key="page", next_key="next_page"):

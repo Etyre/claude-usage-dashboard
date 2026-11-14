@@ -167,3 +167,8 @@ Outside this project:
 - `launchctl bootout` returns before the old job is really gone, and a `bootstrap` straight after
   it fails with "Bootstrap failed: 5: Input/output error", leaving the dashboard stopped.
   `install.sh` now waits for the job to disappear and retries once (2026-11-13).
+- The legacy usage report is sometimes slow on a cold query: the same request took over 60 s (read
+  timeout), then 0.5 s when asked again a minute later. One timeout used to fail the whole live
+  refresh and leave "Live usage report: The read operation timed out" on the page until a later
+  cycle succeeded. Admin API calls now retry timeouts and network errors up to three times, with a
+  "retrying" line in the log (2026-11-14).
