@@ -51,6 +51,7 @@ select, button.btn { font: inherit; padding: 6px 10px; border-radius: 8px; borde
 .tile .hero { font-size: 40px; }
 .tile .delta { font-size: 12px; color: var(--muted); margin-top: 2px; }
 .tile .delta.up { color: var(--bad); } .tile .delta.down { color: var(--good); }
+.tile .extra { font-size: 12px; color: var(--ink-2); margin-top: 2px; }
 .grid { display: grid; grid-template-columns: 1fr; gap: 16px; }
 @media (min-width: 900px) { .grid.two { grid-template-columns: 1fr 1fr; } }
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px 10px; margin-bottom: 16px; }
@@ -178,8 +179,12 @@ details summary { cursor: pointer; color: var(--ink-2); font-size: 13px; padding
     for (const day of days) {
       let rows = d.api_days[day] || [];
       let estimated = false;
+      // Billing data lags by a few hours, so for today and yesterday it can cover only part of
+      // the day. Both sources count the same tokens: the live report wins exactly when it has
+      // seen more of them, and billing data (real cost, product) wins once it has caught up.
       const live = d.live_days[day];
-      if (live && (day === today || (day === yesterday && rows.length === 0))) { rows = live; estimated = true; }
+      const tokSum = (rs) => rs.reduce((t, r) => t + tokens(r), 0);
+      if (live && (day === today || day === yesterday) && tokSum(live) > tokSum(rows)) { rows = live; estimated = true; }
       for (const r of rows) {
         const k = d.keys[r.api_key_id];
         const app = k ? k.display : (r.api_key_id ? r.api_key_id.slice(0, 14) + '…'
@@ -336,7 +341,7 @@ details summary { cursor: pointer; color: var(--ink-2); font-size: 13px; padding
       const logs = st.app_logs || {};
       bits.push(`Agent SDK usage from local transcripts and ${logs.files || 0} app log${logs.files === 1 ? '' : 's'}, scanned ${ago(st.local.last_ok)}`);
     } else {
-      bits.push(`${st.local.files} local transcripts, scanned ${ago(st.local.last_ok)}`);
+      bits.push(`${st.local.files} local transcripts` + (st.local.kept ? ` plus ${st.local.kept} since deleted` : '') + `, scanned ${ago(st.local.last_ok)}`);
       bits.push('cost estimated from list prices');
     }
     bits.push('page updated ' + ago(d.generated_at));
@@ -369,24 +374,40 @@ details summary { cursor: pointer; color: var(--ink-2); font-size: 13px; padding
 
     // KPIs
     const today = todayLogical();
-    const costOver = (from, to) => { let s = 0, known = false, est = false; for (const f of facts) if (f.day >= from && f.day <= to && f.cost != null) { s += f.cost; known = true; est = est || f.estimated; } return { s, known, est }; };
-    const t0 = costOver(today, today), w1 = costOver(addDays(today, -6), today), w0 = costOver(addDays(today, -13), addDays(today, -7));
-    const m1 = costOver(addDays(today, -29), today), mtd = costOver(today.slice(0, 8) + '01', today);
+    // On the Apps tab the headline of each period tile is money actually billed to API keys.
+    // Subscription usage is not billed per token, so its list-price value sits on its own line
+    // and is never added into the headline. The Claude Code tab is all list-price value.
+    const costOver = (from, to, sub) => { let s = 0, est = false; for (const f of facts) if (f.day >= from && f.day <= to && f.cost != null && (f.billing === BILL_SUB) === sub) { s += f.cost; est = est || f.estimated; } return { s, est }; };
+    const period = (from, to) => ({ real: costOver(from, to, false), sub: costOver(from, to, true) });
+    const subLine = (p) => isApi && p.sub.s > 0 ? '+ ' + fmtUSD(p.sub.s) + ' subscription use at list price' : '';
+    const t0 = period(today, today), w1 = period(addDays(today, -6), today);
+    const m1 = period(addDays(today, -29), today), mtd = period(today.slice(0, 8) + '01', today);
+    // Week over week compares complete days only: with today in it, the current week is short
+    // by however much of today is still to come and the change always reads low.
+    const wA = costOver(addDays(today, -7), addDays(today, -1), false).s, wB = costOver(addDays(today, -14), addDays(today, -8), false).s;
+    const wk = wB > 0 ? (wA - wB) / wB : null;
+    // Average over the days there is data for, not a flat 30, when history is shorter than that.
+    const firstDay = facts.reduce((m, f) => f.day < m ? f.day : m, today);
+    const from30 = addDays(today, -29) > firstDay ? addDays(today, -29) : firstDay;
+    const span30 = Math.round((new Date(today + 'T00:00:00Z') - new Date(from30 + 'T00:00:00Z')) / 86400000) + 1;
     const tot = sumBy(inRange, () => 'all').all || { cost: 0, uncached: 0, cache_read: 0, cache_write: 0, output: 0, requests: 0 };
     const totTok = tot.uncached + tot.cache_read + tot.cache_write + tot.output;
-    const wk = w0.s > 0 ? (w1.s - w0.s) / w0.s : null;
-    const tile = (label, value, delta, cls) => `<div class="tile"><div class="label">${label}</div><div class="value ${cls || ''}">${value}</div>${delta ? `<div class="delta ${delta.cls || ''}">${delta.text}</div>` : ''}</div>`;
+    // Cost per request only over rows that report a request count (live days do not).
+    const counted = inRange.filter(f => f.requests > 0 && f.cost != null);
+    const perReq = counted.length ? counted.reduce((t, f) => t + f.cost, 0) / counted.reduce((t, f) => t + f.requests, 0) : null;
+    const tile = (label, value, delta, extra) => `<div class="tile"><div class="label">${label}</div><div class="value">${value}</div>${delta ? `<div class="delta ${delta.cls || ''}">${delta.text}</div>` : ''}${extra ? `<div class="extra">${extra}</div>` : ''}</div>`;
     const byBilling = sumBy(inRange, f => f.billing);
     const billed = (byBilling[BILL_API] || {}).cost || 0, sub = (byBilling[BILL_SUB] || {}).cost || 0;
+    const lbl = (s) => isApi ? s + ', billed' : s;
     document.getElementById('kpis').innerHTML =
-      tile('Today so far', fmtUSD(t0.s), { text: !isApi ? 'estimated at list prices' : t0.est ? 'partly estimated from token counts' : 'from billing data' }) +
-      tile('Last 7 days', fmtUSD(w1.s), wk == null ? null : { text: (wk >= 0 ? '+' : '') + Math.round(wk * 100) + '% vs prior 7 days', cls: wk > 0.05 ? 'up' : wk < -0.05 ? 'down' : '' }) +
-      tile('Last 30 days', fmtUSD(m1.s), { text: 'avg ' + fmtUSD(m1.s / 30) + ' per day' }) +
-      tile('Month to date', fmtUSD(mtd.s), { text: new Date(today + 'T12:00:00Z').toLocaleString('en', { month: 'long', timeZone: 'UTC' }) }) +
+      tile(lbl('Today so far'), fmtUSD(t0.real.s), { text: !isApi ? 'estimated at list prices' : t0.real.est ? 'partly estimated from token counts' : 'from billing data' }, subLine(t0)) +
+      tile(lbl('Last 7 days'), fmtUSD(w1.real.s), wk == null ? null : { text: (wk >= 0 ? '+' : '') + Math.round(wk * 100) + '% vs the 7 days before, today left out', cls: wk > 0.05 ? 'up' : wk < -0.05 ? 'down' : '' }, subLine(w1)) +
+      tile(lbl('Last 30 days'), fmtUSD(m1.real.s), { text: 'avg ' + fmtUSD(m1.real.s / span30) + ' per day' + (span30 < 30 ? ' over ' + span30 + ' days of data' : '') }, subLine(m1)) +
+      tile(lbl('Month to date'), fmtUSD(mtd.real.s), { text: new Date(today + 'T12:00:00Z').toLocaleString('en', { month: 'long', timeZone: 'UTC' }) }, subLine(mtd)) +
       (isApi ? tile('Billed to API', fmtUSD(billed), { text: 'in range, via API keys' }) +
                tile('On subscription', fmtUSD(sub), { text: 'in range, Agent SDK, list-price value' }) : '') +
       tile('Tokens in range', fmtTok(totTok), { text: fmtPct(totTok ? tot.cache_read / totTok : null) + ' served from cache' }) +
-      tile('Requests in range', tot.requests ? tot.requests.toLocaleString() : '—', { text: tot.requests ? fmtUSD(tot.cost / tot.requests) + ' per request' : (isApi ? 'not reported for live/estimated days' : 'assistant messages') });
+      tile('Requests in range', tot.requests ? tot.requests.toLocaleString() : '—', { text: perReq != null ? fmtUSD(perReq) + ' per request' + (isApi ? ', where counted' : '') : (isApi ? 'not reported for live/estimated days' : 'assistant messages') });
 
     // daily bars by group, in dollars or tokens (the card's own toggle)
     const inTokens = state.costMetric === 'tokens';
@@ -462,8 +483,8 @@ details summary { cursor: pointer; color: var(--ink-2); font-size: 13px; padding
     document.getElementById('foot').textContent = isApi
       ? (st.analytics.mode === 'legacy'
         ? 'Token counts come from Anthropic\'s usage report (fresh within about 5 minutes) per API key and model. Costs are estimated at list prices (input, output, cache read, cache writes); the Console\'s Cost page has the billed figures. An Admin API key would switch this to billed costs. ' + dayLabel() + '.'
-        : 'API-key usage: costs for completed days come from Anthropic billing data (post-discount, refreshed about every 4 hours); today, and any day billing has not yet covered, are estimated from live token counts at list prices. Agent SDK usage runs on the Claude subscription, which is not billed per token: it is read from the SDK\'s local transcripts and from per-call logs apps write to ~/.claude/app-usage, and valued at list prices. ' + dayLabel() + '.')
-      : 'Interactive Claude Code sessions, parsed from ~/.claude/projects transcripts (Agent SDK sessions are under Apps). Sessions run on an API key rather than the login are included here too, and also appear under Apps with billed cost. Costs are estimates at list prices (input, output, cache read, 5-minute and 1-hour cache writes), which matches what Claude Code reports with /cost. Subscription plans are not billed per token; this shows what the usage would cost on the API. Helper-model calls (titles, classifiers) are not in the transcripts. ' + dayLabel() + '.';
+        : 'API-key usage: costs for completed days come from Anthropic billing data (post-discount, refreshed about every 4 hours); today, and any day billing has not yet covered, are estimated from live token counts at list prices. Agent SDK usage runs on the Claude subscription, which is not billed per token: it is read from the SDK\'s local transcripts and from per-call logs apps write to ~/.claude/app-usage, and valued at list prices; the period tiles show billed dollars and list that value separately. ' + dayLabel() + '.')
+      : 'Interactive Claude Code sessions, parsed from ~/.claude/projects transcripts (Agent SDK sessions are under Apps). Sessions run on an API key rather than the login are included here too, and also appear under Apps with billed cost. Subagent transcripts are included, and a message copied into a resumed or forked session is counted once. Costs are estimates at list prices (input, output, cache read, 5-minute and 1-hour cache writes, with fast mode at twice the standard rate), which matches what Claude Code reports with /cost. Sessions stay in the history after Claude Code deletes their transcripts. Subscription plans are not billed per token; this shows what the usage would cost on the API. Helper-model calls (titles, classifiers) are not in the transcripts. ' + dayLabel() + '.';
     document.getElementById('dailyHint').textContent = (inTokens ? 'Tokens of all types per day (' : 'USD per day (') + dayLabel() + '). Hover a bar for the breakdown.';
   }
 

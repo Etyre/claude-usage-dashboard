@@ -9,3 +9,5 @@ __pycache__/
 *.pyc
 .venv/
 .DS_Store
+# parsed local usage; not refetchable once Claude Code deletes old transcripts
+history/

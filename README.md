@@ -23,6 +23,22 @@ charting client-side. In the daily chart a group is folded into the grey "Other"
 (default 4 am America/Los_Angeles); the cache files record which timezone/day-start they were
 built with and are discarded when that changes.
 
+What the numbers mean (all of this was audited against real data on 2026-11-16):
+
+- **Period tiles on the Apps tab** ("Today so far", "Last 7 days", "Last 30 days", "Month to
+  date") show dollars actually billed to API keys. Subscription usage is not billed per token, so
+  its list-price value is shown on a second line of each tile and never added into the headline.
+  The daily chart still stacks both; group by Billing to split it.
+- **Week over week** compares the last 7 complete days with the 7 before them. Today is left out,
+  because a week that includes a part-day always reads low.
+- **Today and yesterday** use whichever source has seen more tokens: the live usage report while
+  billing data is still catching up, billing data once it has. The live report's hourly buckets
+  only cover completed hours, so the hour in progress is fetched as minute buckets.
+- **Local transcripts** are scanned recursively, so subagent transcripts
+  (`<project>/<session>/subagents/*.jsonl`) count. A resumed or forked session starts with a copy
+  of the earlier messages; each message id is counted in one transcript only.
+- **Cost per request** divides only the cost of rows that report a request count.
+
 ### Data sources
 
 | Tab | Source | Freshness | Cost |
@@ -75,7 +91,20 @@ Without a key the dashboard still runs and shows the two local sources only.
 List prices per model live in the `PRICING` table at the top of `server.py` (USD per million
 tokens: input, output, cache read, 5-minute cache write, 1-hour cache write; longest model-name
 prefix wins). They are only used for the estimated columns; the Analytics API supplies billed cost.
-Update the table when Anthropic changes prices or ships a new model.
+Update the table when Anthropic changes prices or ships a new model
+(source: <https://platform.claude.com/docs/en/about-claude/pricing>).
+
+On top of the table, each usage record is priced with its own modifiers: fast mode (`usage.speed`
+`fast`, 2x every rate), US-only inference (`inference_geo` `us`, 1.1x), batch (`service_tier`
+`batch`, 0.5x), and Claude Haiku 5.5 prompts over 100K tokens (their own, five times higher,
+rates). Transcripts and app logs carry all of these per message. The live usage report is grouped
+by speed and service tier only (it allows five dimensions), so there US-only inference and long
+Haiku prompts are priced at the standard rate until billing data replaces the estimate. Web
+searches in the live report are added at $10 per 1,000.
+
+A quick check that the table is right: for every model that has run on an API key, the estimate
+from tokens should match the Analytics API's own list cost (`list_usd` in `/api/summary`) to well
+under 1%. On 2026-11-16 it was $4,384.94 against $4,385.71 over 105 days.
 
 ## Files
 
@@ -89,7 +118,8 @@ Update the table when Anthropic changes prices or ships a new model.
 | `.env.example` | Template for `.env` (`ANTHROPIC_ADMIN_KEY`, optional `PORT`) |
 | `config.example.json` | Template for `config.json` (all knobs with their defaults) |
 | `.env`, `config.json` | Your real secret and settings; gitignored |
-| `cache/` | Fetched data and parse offsets (`analytics_days.json`, `names.json`, `local_files_v4.json`, `app_logs.json`); gitignored, rebuilt if deleted |
+| `cache/` | Data fetched from Anthropic (`analytics_days.json`, `names.json`); gitignored, refetched if deleted |
+| `history/` | Parsed local usage (`local_files_v5.json`: per-transcript token sums and message ids; `app_logs_v2.json`: per-log sums and read offsets); gitignored. **Not rebuildable** for sessions whose transcripts Claude Code has since deleted |
 
 ## Runtime locations
 
@@ -98,9 +128,9 @@ Update the table when Anthropic changes prices or ships a new model.
 | Installed launchd agent | `~/Library/LaunchAgents/com.elityre.claude-usage-dashboard.plist` (label `com.elityre.claude-usage-dashboard`) |
 | Code it runs | This folder, in place (`server.py` is not copied anywhere) |
 | Config | `.env` and `config.json`, looked up first in `~/Library/Application Support/claude-usage-dashboard/`, then in this folder. The copies in this folder are the ones in use today |
-| State | `cache/` in this folder |
+| State | `cache/` (refetchable) and `history/` (keep) in this folder |
 | Logs | `~/Library/Logs/claude-usage-dashboard.log` (launchd); stdout/stderr in the foreground. Every line is timestamped. Installs before 7 Nov 2026 logged to `server.log` in this folder; rerun `./install.sh` to move |
-| Inputs it reads | `~/.claude/projects/*/*.jsonl` (transcripts), `~/.claude/app-usage/*.jsonl` (app logs) |
+| Inputs it reads | `~/.claude/projects/**/*.jsonl` (transcripts, subagents included), `~/.claude/app-usage/*.jsonl` (app logs) |
 | URL | `http://localhost:8787` (or `port` in `config.json` / `PORT` in `.env`) |
 
 ## Common tasks
@@ -122,14 +152,16 @@ curl -s localhost:8787/api/refresh                                     # re-pull
 tail -f ~/Library/Logs/claude-usage-dashboard.log
 launchctl print gui/$(id -u)/com.elityre.claude-usage-dashboard | grep -E 'state|pid'
 launchctl kickstart -k gui/$(id -u)/com.elityre.claude-usage-dashboard   # restart without reinstalling
-rm -rf cache/                      # force a full refetch on next start
+rm -rf cache/                      # force a full refetch of the API data on next start
+                                   # (never history/: it holds sessions whose transcripts are gone)
 ```
 
 ## Settings that matter
 
 Copy `config.example.json` to `config.json`. Useful knobs: `timezone` and `day_start_hour` (days are
 bucketed in this IANA zone and start at this hour, default 4 am America/Los_Angeles; changing either
-discards the cache and refetches), `port`, `history_days` (how far back to backfill, max 365 and no
+discards the cache and refetches, and also discards `history/`, which can only be rebuilt from
+the transcripts still on disk), `port`, `history_days` (how far back to backfill, max 365 and no
 earlier than 2026-01-01), and `app_names` to relabel API keys with your app names (keys are matched
 by API key id, by the key's Console name, by an app-usage log's `app` field, or by an Agent SDK
 working directory, full path or path suffix). Other knobs: `revisit_days` (recent days re-fetched
@@ -172,3 +204,15 @@ Outside this project:
   refresh and leave "Live usage report: The read operation timed out" on the page until a later
   cycle succeeded. Admin API calls now retry timeouts and network errors up to three times, with a
   "retrying" line in the log (2026-11-14).
+- Claude Code deletes transcripts older than `cleanupPeriodDays` (30 by default, in
+  `~/.claude/settings.json`). The dashboard used to drop a transcript's usage as soon as its file
+  disappeared, so the 90-day view silently lost local usage older than a month. Parsed usage now
+  lives in `history/` and is kept after the file is gone. Deleting `history/`, or changing
+  `timezone` / `day_start_hour`, loses whatever is no longer on disk (2026-11-16).
+- A model with no row of its own in `PRICING` is priced as the longest matching prefix, with no
+  warning: Claude Fable 5.2 was priced as Fable 5 ($10/$50, cache reads $1.00) instead of
+  $8/$40/$0.20, overstating it by almost half. Add a row for every new model (2026-11-16).
+- Transcript records are not unique across files. Resuming or forking a session copies the earlier
+  messages into the new transcript with the new session id, so counting per file double counts
+  them (118 messages, $30, on 2026-11-16). Message ids are tracked across files in `history/`.
+- The legacy usage report rejects more than 5 `group_by[]` dimensions with HTTP 400 (2026-11-16).

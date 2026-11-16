@@ -11,7 +11,8 @@ Standard library only.
 
 Config: `.env` (ANTHROPIC_ADMIN_KEY) and `config.json`, read from
   ~/Library/Application Support/claude-usage-dashboard/ first, then from this folder.
-State: `cache/` next to this file (safe to delete; it is rebuilt on start).
+State: `cache/` next to this file (API data; safe to delete, it is refetched) and `history/`
+  (parsed local transcripts and app logs; keep it, old transcripts are gone from disk).
 Logs:  ~/Library/Logs/claude-usage-dashboard.log when run under launchd (install.sh);
   stdout/stderr when run in the foreground. Every line carries a timestamp.
 Test:  `python3 server.py --test` scans the local sources once and exits without
@@ -33,7 +34,10 @@ import zoneinfo
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-CACHE_DIR = os.path.join(ROOT, "cache")
+CACHE_DIR = os.path.join(ROOT, "cache")       # refetchable: safe to delete
+# Parsed local usage. NOT refetchable: Claude Code deletes transcripts after cleanupPeriodDays
+# (30 by default), so for older sessions this folder is the only record left.
+HISTORY_DIR = os.path.join(ROOT, "history")
 # Config is looked up here first (the agent-coding convention), then in ROOT.
 APP_SUPPORT_DIR = os.path.expanduser("~/Library/Application Support/claude-usage-dashboard")
 API_BASE = "https://api.anthropic.com"
@@ -57,8 +61,12 @@ DEFAULT_CONFIG = {
 }
 
 # USD per million tokens: (input, output, cache_read, cache_write_5m, cache_write_1h).
-# Sources: Anthropic pricing docs as of 2026-10. Longest prefix wins.
+# Source: https://platform.claude.com/docs/en/about-claude/pricing, checked 2026-11-16.
+# Longest prefix wins, so a new model with no row of its own is silently priced as its
+# predecessor (Fable 5.2 was priced as Fable 5 until 2026-11-16): add a row for every release.
 PRICING = {
+    "claude-fable-5-2":  (8.0, 40.0, 0.20, 10.0, 16.0),
+    "claude-mythos-5-2": (8.0, 40.0, 0.20, 10.0, 16.0),
     "claude-fable-5-1":  (10.0, 50.0, 0.25, 12.5, 20.0),
     "claude-mythos-5-1": (10.0, 50.0, 0.25, 12.5, 20.0),
     "claude-fable-5":    (10.0, 50.0, 1.00, 12.5, 20.0),
@@ -71,7 +79,7 @@ PRICING = {
     "claude-opus-4-5":   (5.0, 25.0, 0.50, 6.25, 10.0),
     "claude-opus-4-1":   (15.0, 75.0, 1.50, 18.75, 30.0),
     "claude-opus-4":     (15.0, 75.0, 1.50, 18.75, 30.0),
-    "claude-sonnet-5-5": (2.0, 10.0, 0.20, 2.5, 4.0),
+    "claude-sonnet-5-5": (2.0, 10.0, 0.10, 2.5, 4.0),
     "claude-sonnet-5":   (2.0, 10.0, 0.20, 2.5, 4.0),
     "claude-sonnet-4-6": (3.0, 15.0, 0.30, 3.75, 6.0),
     "claude-sonnet-4-5": (3.0, 15.0, 0.30, 3.75, 6.0),
@@ -94,12 +102,42 @@ def price_for(model):
     return PRICING.get(best)
 
 
-def estimate_cost(model, uncached, cache_read, cache_5m, cache_1h, output):
-    """Returns USD or None when the model is unpriced."""
+# Modifiers on top of the table. A usage record's modifiers travel as a "variant" string such
+# as "", "fast" or "fast+us" (see usage_variant), so tokens are summed per variant and priced once.
+HAIKU_55_LONG = (0.50, 2.50, 0.05, 0.625, 1.0)   # Haiku 5.5 requests whose prompt is over 100K tokens
+VARIANT_MULT = {"fast": 2.0,    # fast mode: 2x on every rate, cache rates included
+                "us": 1.1,      # inference_geo "us"
+                "batch": 0.5}   # Message Batches
+WEB_SEARCH_USD = 0.01           # $10 per 1,000 searches
+
+
+def usage_variant(model, u, prompt_tokens=0):
+    """Pricing modifiers of one usage record: a transcript message, an app-log line or a usage-report row."""
+    flags = []
+    if u.get("speed") == "fast":
+        flags.append("fast")
+    if u.get("inference_geo") == "us":
+        flags.append("us")
+    if u.get("service_tier") == "batch":
+        flags.append("batch")
+    # The usage report only says "0-200k" or "200k-1M", so there a 100K-200K Haiku prompt goes unnoticed.
+    if (model or "").startswith("claude-haiku-5-5") and (prompt_tokens > 100_000 or u.get("context_window") == "200k-1M"):
+        flags.append("long")
+    return "+".join(flags)
+
+
+def estimate_cost(model, uncached, cache_read, cache_5m, cache_1h, output, variant=""):
+    """List-price USD for these tokens, or None when the model is unpriced."""
     r = price_for(model)
     if not r:
         return None
-    return (uncached * r[0] + output * r[1] + cache_read * r[2] + cache_5m * r[3] + cache_1h * r[4]) / 1e6
+    mult = 1.0
+    for flag in (variant.split("+") if variant else ()):
+        if flag == "long":
+            r = HAIKU_55_LONG
+        else:
+            mult *= VARIANT_MULT.get(flag, 1.0)
+    return mult * (uncached * r[0] + output * r[1] + cache_read * r[2] + cache_5m * r[3] + cache_1h * r[4]) / 1e6
 
 
 # ----------------------------------------------------------------------------
@@ -323,6 +361,11 @@ class AdminAPI:
             buckets.extend(page.get("data", []))
         return buckets
 
+    # Grouping by speed and service tier lets the list-price estimate apply fast mode and batch
+    # prices; the dashboard folds them back into one row per key and model. The report takes at
+    # most 5 dimensions, so US-only inference (1.1x) and long Haiku prompts are not told apart here.
+    LEGACY_GROUPS = ["api_key_id", "model", "workspace_id", "speed", "service_tier"]
+
 
 # ----------------------------------------------------------------------------
 # normalization helpers
@@ -356,6 +399,7 @@ class Store:
         self.cfg = cfg
         self.lock = threading.Lock()
         os.makedirs(CACHE_DIR, exist_ok=True)
+        os.makedirs(HISTORY_DIR, exist_ok=True)
         key = os.environ.get("ANTHROPIC_ADMIN_KEY") or ""
         self.api = AdminAPI(key) if key else None
         self.status = {
@@ -364,27 +408,30 @@ class Store:
                           "mode": "analytics"},
             "live": {"last_ok": None, "last_error": None, "running": False},
             "names": {"last_ok": None, "last_error": None},
-            "local": {"last_ok": None, "last_error": None, "files": 0, "running": False},
+            "local": {"last_ok": None, "last_error": None, "files": 0, "kept": 0, "running": False},
             "app_logs": {"last_ok": None, "last_error": None, "files": 0, "running": False},
         }
         self.clock = DayClock(cfg["timezone"], cfg["day_start_hour"])
         # Both caches are keyed by logical day, so they are only valid for one day boundary.
         self.analytics_days = self._read_versioned("analytics_days.json")
-        self._local_file_cache = self._read_versioned("local_files_v4.json")
-        self._app_log_cache = self._read_versioned("app_logs.json")
+        self._local_file_cache = self._read_versioned("local_files_v5.json", HISTORY_DIR)
+        self._app_log_cache = self._read_versioned("app_logs_v2.json", HISTORY_DIR)
+        # message id -> the transcript it is counted in. A resumed or forked session copies the
+        # earlier messages into its new file; each message is counted in one file only.
+        self._mid_owner = {m: path for path, e in self._local_file_cache.items() for m in e.get("mids", [])}
         self.names = read_json(os.path.join(CACHE_DIR, "names.json"), {"api_keys": {}, "workspaces": {}})
         self.live_days = {}
         self.local_days = {}
         self.app_log_days = {}
 
-    def _read_versioned(self, name):
-        data = read_json(os.path.join(CACHE_DIR, name), {})
+    def _read_versioned(self, name, folder=CACHE_DIR):
+        data = read_json(os.path.join(folder, name), {})
         if data.get("_clock") != self.clock.marker():
             return {}
         return data.get("data", {})
 
-    def _write_versioned(self, name, data):
-        write_json(os.path.join(CACHE_DIR, name), {"_clock": self.clock.marker(), "data": data})
+    def _write_versioned(self, name, data, folder=CACHE_DIR):
+        write_json(os.path.join(folder, name), {"_clock": self.clock.marker(), "data": data})
 
     # ---------------- Analytics API
     def refresh_names(self):
@@ -455,8 +502,10 @@ class Store:
                 # after the last one (ending at "now" would drop the current partial bucket).
                 start = self.clock.day_start(w_start)
                 end = self.clock.day_start(w_end + dt.timedelta(days=1))
+                legacy_buckets = []
                 if self.status["analytics"].get("mode") == "legacy":
-                    usage_rows, cost_rows, r1, r2 = self._legacy_window(start, end), [], None, None
+                    usage_rows, cost_rows, r1, r2 = [], [], None, None
+                    legacy_buckets = self._legacy_window(start, end)
                 else:
                     try:
                         usage_rows, r1 = self.api.analytics("usage", start, end, group_by)
@@ -469,7 +518,8 @@ class Store:
                         log(f"Analytics API unavailable ({e}); falling back to legacy usage report")
                         with self.lock:
                             self.status["analytics"]["mode"] = "legacy"
-                        usage_rows, cost_rows, r1, r2 = self._legacy_window(start, end), [], None, None
+                        usage_rows, cost_rows, r1, r2 = [], [], None, None
+                        legacy_buckets = self._legacy_window(start, end)
                 refreshed_at = r1 or r2 or refreshed_at
                 days = {}
                 d = w_start
@@ -498,12 +548,8 @@ class Store:
                     t = g.get("token_type") or g.get("cost_type") or "other"
                     row["cost_by_type"][t] = row["cost_by_type"].get(t, 0) + amt
                     rows[k] = row
-                if self.status["analytics"].get("mode") == "legacy":
-                    for rows in days.values():
-                        for row in rows.values():
-                            row["cost_usd"] = estimate_cost(row["model"], row["uncached"], row["cache_read"],
-                                                            row["cache_5m"], row["cache_1h"], row["output"])
-                            row["estimated"] = True
+                for day, rows in self._legacy_days(legacy_buckets).items():
+                    days.setdefault(day, {}).update(rows)
                 with self.lock:
                     for day, rows in days.items():
                         self.analytics_days[day] = {"rows": list(rows.values()), "fetched_at": iso(utcnow())}
@@ -523,21 +569,38 @@ class Store:
                 self.status["analytics"]["running"] = False
 
     def _legacy_window(self, start, end):
-        """Legacy usage report for [start, end), hourly, reshaped like Analytics API usage rows."""
-        items = []
+        """Hourly legacy usage report buckets for [start, end)."""
         buckets = []
         s = start
         while s < end:   # hourly buckets are limited to 168 per request
             e = min(end, s + dt.timedelta(days=7))
-            buckets.extend(self.api.legacy_usage(s, e, ["api_key_id", "model", "workspace_id"], bucket_width="1h"))
+            buckets.extend(self.api.legacy_usage(s, e, AdminAPI.LEGACY_GROUPS, bucket_width="1h"))
             s = e
+        return buckets
+
+    def _legacy_days(self, buckets):
+        """Usage-report buckets -> {day: {row_key: row}}, cost estimated at list prices.
+
+        Each result is priced on its own (it carries its speed, geography, tier and context
+        window) and then folded into one row per API key, model and workspace.
+        """
+        days = {}
         for b in buckets:
+            day = self.clock.day_of_iso(b["starting_at"])
+            rows = days.setdefault(day, {})
             for r in b.get("results", []):
-                items.append({"starting_at": b["starting_at"],
-                              "group": {"api_key_id": r.get("api_key_id"), "model": r.get("model"),
-                                        "product": None, "workspace_id": r.get("workspace_id")},
-                              "usage": r})
-        return items
+                k = (r.get("api_key_id"), r.get("model"), None, r.get("workspace_id"))
+                one = new_row(*k)
+                add_usage(one, r)
+                cost = estimate_cost(one["model"], one["uncached"], one["cache_read"], one["cache_5m"],
+                                     one["cache_1h"], one["output"], usage_variant(one["model"], r))
+                row = rows.get(k) or new_row(*k)
+                add_usage(row, r)
+                if cost is not None:
+                    row["cost_usd"] = (row["cost_usd"] or 0) + cost + one["web_search"] * WEB_SEARCH_USD
+                row["estimated"] = True
+                rows[k] = row
+        return days
 
     # ---------------- legacy usage report for yesterday and today (live)
     def refresh_live(self):
@@ -549,21 +612,16 @@ class Store:
             today = self.clock.today()
             start = self.clock.day_start(today - dt.timedelta(days=1))
             end = self.clock.day_start(today + dt.timedelta(days=1))
-            buckets = self.api.legacy_usage(start, end, ["api_key_id", "model", "workspace_id"], bucket_width="1h")
-            days = {}
-            for b in buckets:
-                day = self.clock.day_of_iso(b["starting_at"])
-                rows = days.setdefault(day, {})
-                for r in b.get("results", []):
-                    k = (r.get("api_key_id"), r.get("model"), None, r.get("workspace_id"))
-                    row = rows.get(k) or new_row(*k)
-                    add_usage(row, r)
-                    rows[k] = row
-            for day, rows in days.items():
-                for row in rows.values():
-                    row["cost_usd"] = estimate_cost(row["model"], row["uncached"], row["cache_read"],
-                                                    row["cache_5m"], row["cache_1h"], row["output"])
-                    row["estimated"] = True
+            # Hourly buckets only cover completed hours, which left "today" up to an hour behind.
+            # The hour in progress comes from minute buckets instead; any hourly bucket for it is
+            # dropped so the two can never be added together.
+            now = utcnow()
+            hour_start = now.replace(minute=0, second=0, microsecond=0)
+            hourly = self.api.legacy_usage(start, end, AdminAPI.LEGACY_GROUPS, bucket_width="1h")
+            buckets = [b for b in hourly if b["starting_at"] < iso(hour_start)]
+            buckets += self.api.legacy_usage(hour_start, now + dt.timedelta(minutes=1), AdminAPI.LEGACY_GROUPS,
+                                             bucket_width="1m")
+            days = self._legacy_days(buckets)
             with self.lock:
                 self.live_days = {d: list(rows.values()) for d, rows in days.items()}
                 self.status["live"].update(last_ok=iso(utcnow()), last_error=None)
@@ -582,27 +640,33 @@ class Store:
             self.status["local"]["running"] = True
         try:
             base = os.path.expanduser(self.cfg["claude_projects_dir"])
-            files = glob.glob(os.path.join(base, "*", "*.jsonl"))
+            # Recursive: subagent transcripts live in <project>/<session>/subagents/*.jsonl.
+            files = glob.glob(os.path.join(base, "**", "*.jsonl"), recursive=True)
             cache = self._local_file_cache
-            seen_paths = set()
-            changed = False
+            stats = []
             for path in files:
-                seen_paths.add(path)
                 try:
-                    st = os.stat(path)
+                    stats.append((os.stat(path), path))
                 except OSError:
                     continue
+            changed = False
+            # Oldest first, so on a first scan the original session owns the messages a later
+            # resumed or forked session copied from it.
+            for st, path in sorted(stats, key=lambda x: x[0].st_mtime):
                 sig = f"{st.st_size}:{int(st.st_mtime)}"
                 if cache.get(path, {}).get("sig") == sig:
                     continue
-                cache[path] = {"sig": sig, "agg": parse_transcript(path, self.clock)}
+                agg, mids = parse_transcript(path, self.clock, self._mid_owner)
+                for m in mids:
+                    self._mid_owner[m] = path
+                cache[path] = {"sig": sig, "agg": agg, "mids": mids}
                 changed = True
-            for path in list(cache):
-                if path not in seen_paths:
-                    del cache[path]
-                    changed = True
+            # Entries whose transcript has been deleted are kept on purpose: Claude Code removes
+            # transcripts after cleanupPeriodDays, and dropping them here erased the usage history.
             if changed:
-                self._write_versioned("local_files_v4.json", cache)
+                self._write_versioned("local_files_v5.json", cache, HISTORY_DIR)
+            on_disk = set(files)
+            kept = sum(1 for path in cache if path not in on_disk)
             # aggregate: day -> (project, model, entrypoint, billing) -> row
             days = {}
             for entry in cache.values():
@@ -614,18 +678,19 @@ class Store:
                     row = rows.get(k)
                     if not row:
                         row = {"project": project, "model": a["model"], "entrypoint": a.get("entrypoint") or "cli",
-                               "billing": billing,
+                               "billing": billing, "cost_usd": None,
                                "uncached": 0, "cache_read": 0, "cache_5m": 0, "cache_1h": 0, "output": 0, "requests": 0}
                         rows[k] = row
                     for f in ("uncached", "cache_read", "cache_5m", "cache_1h", "output", "requests"):
                         row[f] += a[f]
-            for rows in days.values():
-                for row in rows.values():
-                    row["cost_usd"] = estimate_cost(row["model"], row["uncached"], row["cache_read"],
-                                                    row["cache_5m"], row["cache_1h"], row["output"])
+                    # priced per variant (fast mode, long Haiku prompts...) before folding into the row
+                    cost = estimate_cost(a["model"], a["uncached"], a["cache_read"], a["cache_5m"], a["cache_1h"],
+                                         a["output"], a.get("variant", ""))
+                    if cost is not None:
+                        row["cost_usd"] = (row["cost_usd"] or 0) + cost
             with self.lock:
                 self.local_days = {d: list(r.values()) for d, r in days.items()}
-                self.status["local"].update(last_ok=iso(utcnow()), last_error=None, files=len(files))
+                self.status["local"].update(last_ok=iso(utcnow()), last_error=None, files=len(files), kept=kept)
         except Exception as e:
             with self.lock:
                 self.status["local"]["last_error"] = str(e)
@@ -678,38 +743,37 @@ class Store:
                 except OSError:
                     continue
                 entry = cache.get(path) or {"offset": 0, "agg": {}}
-                if size < entry["offset"]:            # truncated or rotated: start over
-                    entry = {"offset": 0, "agg": {}}
+                if size < entry["offset"]:
+                    # Truncated or rotated: read the new file from the top, but keep what was
+                    # already counted, since that usage happened.
+                    entry["offset"] = 0
                 if size == entry["offset"]:
                     continue
                 entry["offset"] = parse_app_log(path, entry["offset"], entry["agg"], self.clock)
                 cache[path] = entry
                 changed = True
-            for path in list(cache):
-                if path not in files:
-                    del cache[path]
-                    changed = True
+            # A log that has been deleted keeps its counted usage, like a deleted transcript.
             if changed:
-                self._write_versioned("app_logs.json", cache)
+                self._write_versioned("app_logs_v2.json", cache, HISTORY_DIR)
             overrides = self.cfg.get("app_names") or {}
             days = {}
             for entry in cache.values():
                 for key, a in entry["agg"].items():
-                    day, app, model, source, billing = key.split("\t")
+                    day, app, model, source, billing, variant = key.split("\t")
                     app = overrides.get(app, app)
                     rows = days.setdefault(day, {})
                     k = (app, model, source, billing)
                     row = rows.get(k)
                     if not row:
-                        row = {"app": app, "model": model, "source": source, "billing": billing,
+                        row = {"app": app, "model": model, "source": source, "billing": billing, "cost_usd": None,
                                "uncached": 0, "cache_read": 0, "cache_5m": 0, "cache_1h": 0, "output": 0, "requests": 0}
                         rows[k] = row
                     for f in ("uncached", "cache_read", "cache_5m", "cache_1h", "output", "requests"):
                         row[f] += a[f]
-            for rows in days.values():
-                for row in rows.values():
-                    row["cost_usd"] = estimate_cost(row["model"], row["uncached"], row["cache_read"],
-                                                    row["cache_5m"], row["cache_1h"], row["output"])
+                    cost = estimate_cost(model, a["uncached"], a["cache_read"], a["cache_5m"], a["cache_1h"],
+                                         a["output"], variant)
+                    if cost is not None:
+                        row["cost_usd"] = (row["cost_usd"] or 0) + cost
             with self.lock:
                 self.app_log_days = {d: list(r.values()) for d, r in days.items()}
                 self.status["app_logs"].update(last_ok=iso(utcnow()), last_error=None, files=len(files))
@@ -778,11 +842,13 @@ class Store:
             threading.Thread(target=fn, daemon=True).start()
 
 
-def parse_transcript(path, clock):
-    """Aggregate one Claude Code session transcript into (day, project, model) token sums.
+def parse_transcript(path, clock, owner=None):
+    """Aggregate one Claude Code transcript into (day, model, pricing variant) token sums.
 
-    Streaming writes one record per content block with the same message id and the
-    same (final) usage, so usage is counted once per message id.
+    Returns (rows, message ids counted here). Streaming writes one record per content block
+    with the same message id and the same (final) usage, so usage is counted once per message
+    id. `owner` maps message ids to the transcript that already counts them: a resumed or
+    forked session starts with a copy of the earlier messages, which are skipped here.
 
     Billing: Claude Code appends a {"type": "attachment", "attachment": {"type": "credential_org"}}
     record when (and only when) the session runs on a claude.ai login, so a transcript with one
@@ -792,6 +858,8 @@ def parse_transcript(path, clock):
     """
     agg = {}
     seen = set()
+    mids = []
+    owner = owner or {}
     cwd = None
     entrypoint = None
     credential_org = None
@@ -832,19 +900,24 @@ def parse_transcript(path, clock):
                     entrypoint = d["entrypoint"]   # cli (interactive) / sdk-py / sdk-ts / sdk-cli
                 if version is None and d.get("version"):
                     version = d["version"]
+                if owner.get(mid, path) != path:
+                    continue   # already counted in the session this one was resumed or forked from
+                mids.append(mid)
                 ts = d.get("timestamp") or ""
                 day = clock.day_of_iso(ts) or "unknown"
-                k = (day, model)
-                row = agg.get(k)
-                if not row:
-                    row = {"day": day, "model": model, "uncached": 0, "cache_read": 0,
-                           "cache_5m": 0, "cache_1h": 0, "output": 0, "requests": 0}
-                    agg[k] = row
                 cc = u.get("cache_creation") or {}
                 cw = u.get("cache_creation_input_tokens", 0) or 0
                 c5, c1 = cc.get("ephemeral_5m_input_tokens"), cc.get("ephemeral_1h_input_tokens")
                 if c5 is None and c1 is None:
                     c5, c1 = cw, 0   # older records: assume 5m TTL
+                prompt = (u.get("input_tokens", 0) or 0) + (u.get("cache_read_input_tokens", 0) or 0) + (c5 or 0) + (c1 or 0)
+                variant = usage_variant(model, u, prompt)
+                k = (day, model, variant)
+                row = agg.get(k)
+                if not row:
+                    row = {"day": day, "model": model, "variant": variant, "uncached": 0, "cache_read": 0,
+                           "cache_5m": 0, "cache_1h": 0, "output": 0, "requests": 0}
+                    agg[k] = row
                 row["uncached"] += u.get("input_tokens", 0) or 0
                 row["cache_read"] += u.get("cache_read_input_tokens", 0) or 0
                 row["cache_5m"] += c5 or 0
@@ -852,12 +925,12 @@ def parse_transcript(path, clock):
                 row["output"] += u.get("output_tokens", 0) or 0
                 row["requests"] += 1
     except OSError:
-        return []
+        return [], []
     for row in agg.values():
         row["cwd"] = cwd
         row["entrypoint"] = entrypoint or "cli"
         row["billing"] = "api" if (credential_org is None and _version_tuple(version) >= (2, 1, 281)) else "subscription"
-    return list(agg.values())
+    return list(agg.values()), mids
 
 
 def _version_tuple(v):
@@ -871,7 +944,8 @@ def parse_app_log(path, offset, agg, clock):
     """Fold new lines of an app usage log (from byte `offset`) into `agg`; returns the new offset.
 
     One JSON object per line: {"ts": ISO-8601, "app": name, "model": id, "source": "agent-sdk"|"api",
-    "billing": "subscription"|"api", "usage": {...Anthropic usage fields...}}. Lines that do not
+    "billing": "subscription"|"api", "usage": {...Anthropic usage fields...}}. `usage.speed`,
+    `usage.inference_geo` and `usage.service_tier` are honoured when present. Lines that do not
     parse, or are only partly written, are skipped; a partial last line is re-read next time.
     """
     with open(path, "rb") as f:
@@ -891,15 +965,17 @@ def parse_app_log(path, offset, agg, clock):
         if not isinstance(u, dict):
             continue
         day = clock.day_of_iso(d.get("ts") or "") or "unknown"
-        key = "\t".join([day, str(d.get("app") or "unknown"), str(d.get("model") or "unknown"),
-                         str(d.get("source") or "agent-sdk"), str(d.get("billing") or "subscription")])
-        row = agg.get(key)
-        if not row:
-            row = agg[key] = {"uncached": 0, "cache_read": 0, "cache_5m": 0, "cache_1h": 0, "output": 0, "requests": 0}
         cc = u.get("cache_creation") or {}
         c5, c1 = cc.get("ephemeral_5m_input_tokens"), cc.get("ephemeral_1h_input_tokens")
         if c5 is None and c1 is None:
             c5, c1 = u.get("cache_creation_input_tokens", 0) or 0, 0
+        model = str(d.get("model") or "unknown")
+        prompt = int(u.get("input_tokens", 0) or 0) + int(u.get("cache_read_input_tokens", 0) or 0) + int(c5 or 0) + int(c1 or 0)
+        key = "\t".join([day, str(d.get("app") or "unknown"), model, str(d.get("source") or "agent-sdk"),
+                         str(d.get("billing") or "subscription"), usage_variant(model, u, prompt)])
+        row = agg.get(key)
+        if not row:
+            row = agg[key] = {"uncached": 0, "cache_read": 0, "cache_5m": 0, "cache_1h": 0, "output": 0, "requests": 0}
         row["uncached"] += int(u.get("input_tokens", 0) or 0)
         row["cache_read"] += int(u.get("cache_read_input_tokens", 0) or 0)
         row["cache_5m"] += int(c5 or 0)
