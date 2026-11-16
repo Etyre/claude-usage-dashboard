@@ -125,6 +125,22 @@ A quick check that the table is right: for every model that has run on an API ke
 from tokens should match the Analytics API's own list cost (`list_usd` in `/api/summary`) to well
 under 1%. On 2026-11-16 it was $4,384.94 against $4,385.71 over 105 days.
 
+### Fast mode versus standard speed
+
+Both tabs have a section comparing fast mode with standard speed, for the selected range: what
+the fast-mode messages cost, how much of that was the 2x premium (`cost_usd - standard_usd`, the
+same tokens priced without the multiplier), a per-day chart of the two, and measured output speed
+per model. The Claude Code tab covers interactive sessions and the Apps tab covers Agent SDK
+sessions; both come from transcripts (`speed_days` in `/api/summary`), so calls made with an API
+key and app-log usage are not in it.
+
+Speed is end to end: output tokens divided by the seconds from sending the request to the
+message's last transcript record, summed over messages, so the wait for the first token counts.
+"Waiting time saved" is the fast-mode output divided by the standard rate on the same model,
+minus the time it actually took; the standard rate comes from the selected range, or from all
+history when the range has fewer than 5 timed standard messages. A rate needs at least 5 timed
+messages to be shown.
+
 ## Files
 
 | File | Purpose |
@@ -235,3 +251,12 @@ Outside this project:
   messages into the new transcript with the new session id, so counting per file double counts
   them (118 messages, $30, on 2026-11-16). Message ids are tracked across files in `history/`.
 - The legacy usage report rejects more than 5 `group_by[]` dimensions with HTTP 400 (2026-11-16).
+- **Timing a response from a transcript: only the `api-request` record marks the start.** Claude
+  Code writes an `api-request` record when it sends a request; attachment records
+  (`deferred_tools_record` and others) are stamped when the response arrives, and some records are
+  out of timestamp order, so "the record before the message" as the start made a third of the
+  messages look instant. Older transcripts without `api-request` fall back to the preceding user
+  or tool-result record. Requests over 10 minutes are left out of the speed figures.
+- **Teaching the parser something new: bump `PARSE_V`.** Transcripts still on disk are then read
+  again; sessions whose transcripts are gone keep their old sums and simply lack the new fields
+  (their messages are not in the speed figures).

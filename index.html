@@ -72,6 +72,7 @@ details summary { cursor: pointer; color: var(--ink-2); font-size: 13px; padding
 .foot { color: var(--muted); font-size: 12px; margin-top: 12px; }
 .pill { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); color: var(--ink-2); margin-left: 6px; vertical-align: 2px; }
 .empty { color: var(--muted); padding: 24px 0; text-align: center; }
+h2.section { font-size: 16px; font-weight: 600; margin: 8px 0 2px; }
 </style>
 </head>
 <body>
@@ -121,6 +122,24 @@ details summary { cursor: pointer; color: var(--ink-2); font-size: 13px; padding
       <h2 id="modelTitle">Cost by model</h2>
       <p class="hint">Total over the selected range.</p>
       <div class="chart"><canvas id="modelChart"></canvas></div>
+    </div>
+  </div>
+
+  <div id="fastSection">
+    <h2 class="section">Fast mode versus standard speed</h2>
+    <p class="sub" id="fastHint"></p>
+    <div class="kpis" id="fastKpis"></div>
+    <div class="grid two">
+      <div class="card">
+        <h2>What fast mode cost, per day</h2>
+        <p class="hint">The fast-mode messages only: what their tokens cost at standard speed, and what fast mode added.</p>
+        <div class="chart"><canvas id="fastCostChart"></canvas></div>
+      </div>
+      <div class="card">
+        <h2>Output speed by model</h2>
+        <p class="hint">Output tokens per second over the selected range, measured from your own sessions.</p>
+        <div class="chart"><canvas id="speedChart"></canvas></div>
+      </div>
     </div>
   </div>
 
@@ -460,6 +479,8 @@ details summary { cursor: pointer; color: var(--ink-2); font-size: 13px; padding
     const { map: mColors } = colorMap(facts, secondDim);
     hBar('modelChart', mRank, mRank.map(m => metric(byModel[m])), mRank.map(m => mColors[m] ? css(mColors[m]) : css('--neutral')), fmtMetric);
 
+    renderFast(d, days, labels, isApi, tile);
+
     // group table
     document.getElementById('tableTitle').textContent = groupName + 's';
     const sparkDays = []; for (let i = 13; i >= 0; i--) sparkDays.push(addDays(today, -i));
@@ -491,8 +512,67 @@ details summary { cursor: pointer; color: var(--ink-2); font-size: 13px; padding
       ? (st.analytics.mode === 'legacy'
         ? 'Token counts come from Anthropic\'s usage report (fresh within about 5 minutes) per API key and model. Costs are estimated at list prices (input, output, cache read, cache writes); the Console\'s Cost page has the billed figures. An Admin API key would switch this to billed costs. ' + dayLabel() + '.'
         : 'API-key usage: costs for completed days come from Anthropic billing data (post-discount, refreshed about every 4 hours); today, and any day billing has not yet covered, are estimated from live token counts at list prices. Agent SDK usage runs on the Claude subscription, which is not billed per token: it is read from the SDK\'s local transcripts and from per-call logs apps write to ~/.claude/app-usage, and valued at list prices; the period tiles show billed dollars and list that value separately. ' + dayLabel() + '.')
-      : 'Interactive Claude Code sessions, parsed from ~/.claude/projects transcripts (Agent SDK sessions are under Apps). Sessions run on an API key rather than the login are included here too, and also appear under Apps with billed cost. Subagent transcripts are included, and a message copied into a resumed or forked session is counted once. Costs are estimates at list prices (input, output, cache read, 5-minute and 1-hour cache writes, with fast mode at twice the standard rate), which matches what Claude Code reports with /cost. Sessions stay in the history after Claude Code deletes their transcripts. Subscription plans are not billed per token; this shows what the usage would cost on the API. Helper-model calls (titles, classifiers) are not in the transcripts. ' + dayLabel() + '.';
+      : 'Interactive Claude Code sessions, parsed from ~/.claude/projects transcripts (Agent SDK sessions are under Apps). Sessions run on an API key rather than the login are included here too, and also appear under Apps with billed cost. Subagent transcripts are included, and a message copied into a resumed or forked session is counted once. Costs are estimates at list prices (input, output, cache read, 5-minute and 1-hour cache writes, with fast mode at twice the standard rate; the fast mode section compares that with standard speed), which matches what Claude Code reports with /cost. Sessions stay in the history after Claude Code deletes their transcripts. Subscription plans are not billed per token; this shows what the usage would cost on the API. Helper-model calls (titles, classifiers) are not in the transcripts. ' + dayLabel() + '.';
     document.getElementById('dailyHint').textContent = (inTokens ? 'Tokens of all types per day (' : 'USD per day (') + dayLabel() + '). Hover a bar for the breakdown.';
+  }
+
+  // ---- fast mode versus standard speed (Claude Code tab). Standard is --s1 and fast is --s2 in both charts.
+  const fmtRate = (v) => v == null || !isFinite(v) ? '—' : Math.round(v) + ' tok/s';
+  const fmtDur = (s) => s == null || !isFinite(s) ? '—' : s < 90 ? Math.round(s) + ' s' : s < 5400 ? (s / 60).toFixed(1) + ' min' : (s / 3600).toFixed(1) + ' h';
+  function renderFast(d, days, labels, isApi, tile) {
+    const daySet = new Set(days);
+    const blank = () => ({ cost: 0, standard: 0, output: 0, requests: 0, seconds: 0, timedOutput: 0, timed: 0 });
+    const add = (o, r) => { o.cost += r.cost_usd; o.standard += r.standard_usd; o.output += r.output; o.requests += r.requests;
+      o.seconds += r.seconds || 0; o.timedOutput += r.timed_output || 0; o.timed += r.timed || 0; };
+    const inR = {}, all = {}, perDay = {};          // model -> { std, fast } in range and over all history; day -> fast totals
+    const slot = (m, model) => m[model] || (m[model] = { std: blank(), fast: blank() });
+    for (const [day, rows] of Object.entries(d.speed_days || {})) for (const r of rows) {
+      if (r.sdk !== isApi) continue;   // Apps tab: Agent SDK sessions; Claude Code tab: interactive ones
+      add(slot(all, r.model)[r.fast ? 'fast' : 'std'], r);
+      if (!daySet.has(day)) continue;
+      add(slot(inR, r.model)[r.fast ? 'fast' : 'std'], r);
+      if (r.fast) add(perDay[day] || (perDay[day] = blank()), r);
+    }
+    const rate = (o) => o.timed >= 5 && o.seconds > 0 ? o.timedOutput / o.seconds : null;   // too few messages say nothing
+    // Standard speed to compare a model's fast messages with: the range's own, else all history.
+    const stdRate = (model) => rate(inR[model].std) ?? rate(slot(all, model).std);
+    const fast = blank(); let stdMsgs = 0, asStdSeconds = 0, fastSeconds = 0, comparable = true;
+    const fastModels = Object.keys(inR).filter(m => inR[m].fast.requests > 0);
+    for (const m of fastModels) {
+      const f = inR[m].fast, fr = rate(f), sr = stdRate(m);
+      for (const k in fast) fast[k] += f[k];
+      stdMsgs += inR[m].std.requests;
+      if (fr && sr) { asStdSeconds += f.output / sr; fastSeconds += f.output / fr; } else comparable = false;
+    }
+    comparable = comparable && fastModels.length > 0;
+    const premium = fast.cost - fast.standard, saved = comparable ? asStdSeconds - fastSeconds : null;
+    const names = fastModels.join(', ');
+    document.getElementById('fastKpis').innerHTML =
+      tile('Fast mode, in range', fmtUSD(fast.cost), { text: fast.requests ? `${fast.requests.toLocaleString()} messages, ${fmtPct(fast.requests / (fast.requests + stdMsgs))} of ${esc(names)} messages` : 'no fast mode messages in this range' }) +
+      tile('Extra paid for speed', fast.requests ? fmtUSD(premium) : '—', { text: fast.requests ? `the same tokens at standard speed: ${fmtUSD(fast.standard)}` : '' }) +
+      tile('Output speed in fast mode', comparable ? fmtRate(fast.output / fastSeconds) : '—', { text: comparable ? `standard: ${fmtRate(fast.output / asStdSeconds)} on the same model, so ${(asStdSeconds / fastSeconds).toFixed(1)}× as fast` : fast.requests ? 'too few timed messages to compare' : '' }) +
+      tile('Waiting time saved', comparable ? fmtDur(saved) : '—', { text: comparable && saved > 0 ? `about ${fmtUSD(premium / (saved / 60))} per minute saved` : '' });
+    document.getElementById('fastHint').textContent = 'Fast mode produces output faster at twice the price of every token. ' + (isApi ? 'This section covers Agent SDK sessions, from their transcripts; calls made with an API key are not in it. Costs are list-price values. ' : 'Costs here are list-price values, like the rest of this tab. ') + 'Speed is end to end: output tokens divided by the time from sending a request to its last token, so the wait for the first token counts.';
+
+    stackedBar('fastCostChart', labels, [
+      { label: 'Same tokens at standard speed', backgroundColor: css('--s1'), data: days.map(day => perDay[day] ? perDay[day].standard : 0) },
+      { label: 'Extra for fast mode', backgroundColor: css('--s2'), data: days.map(day => perDay[day] ? perDay[day].cost - perDay[day].standard : 0) },
+    ], fmtUSD, fmtUSD);
+
+    // one pair of bars per model: models used in fast mode first, then by output
+    const models = Object.keys(inR).filter(m => rate(inR[m].std) || rate(inR[m].fast))
+      .sort((a, b) => (inR[b].fast.output > 0) - (inR[a].fast.output > 0) || (inR[b].std.output + inR[b].fast.output) - (inR[a].std.output + inR[a].fast.output));
+    destroy('speedChart');
+    const opts = baseOpts({ indexAxis: 'y', interaction: { mode: 'index', axis: 'y', intersect: false } });
+    opts.scales = {
+      x: { beginAtZero: true, grid: { color: css('--grid') }, border: { display: false }, ticks: { callback: (v) => v, font: { size: 11 }, maxTicksLimit: 6 }, title: { display: true, text: 'output tokens per second', color: css('--muted'), font: { size: 11 } } },
+      y: { grid: { display: false }, border: { color: css('--axis') }, ticks: { color: css('--ink-2'), autoSkip: false, font: { size: 12 } } },
+    };
+    opts.plugins.tooltip.filter = (c) => c.raw != null;
+    opts.plugins.tooltip.callbacks = { label: (c) => ` ${c.dataset.label}: ${fmtRate(c.raw)} over ${inR[c.label][c.datasetIndex ? 'fast' : 'std'].timed.toLocaleString()} messages` };
+    const bars = (label, key, col) => ({ label, backgroundColor: css(col), data: models.map(m => rate(inR[m][key])), borderRadius: 3, borderSkipped: false, barPercentage: 0.8, categoryPercentage: 0.7 });
+    state.charts.speedChart = new Chart(document.getElementById('speedChart'), { type: 'bar',
+      data: { labels: models, datasets: [bars('Standard', 'std', '--s1'), bars('Fast mode', 'fast', '--s2')] }, options: opts });
   }
 
   function setGroupOptions() {

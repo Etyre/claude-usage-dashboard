@@ -457,6 +457,7 @@ class Store:
         self.names = read_json(os.path.join(CACHE_DIR, "names.json"), {"api_keys": {}, "workspaces": {}})
         self.live_days = {}
         self.local_days = {}
+        self.speed_days = {}
         self.app_log_days = {}
 
     def _read_versioned(self, name, folder=CACHE_DIR):
@@ -689,12 +690,15 @@ class Store:
             # resumed or forked session copied from it.
             for st, path in sorted(stats, key=lambda x: x[0].st_mtime):
                 sig = f"{st.st_size}:{int(st.st_mtime)}"
-                if cache.get(path, {}).get("sig") == sig:
+                old = cache.get(path, {})
+                # A transcript still on disk is read again when the parser has learned to record
+                # something new (PARSE_V); one that is gone keeps whatever was recorded at the time.
+                if old.get("sig") == sig and old.get("v") == PARSE_V:
                     continue
                 agg, mids = parse_transcript(path, self.clock, self._mid_owner)
                 for m in mids:
                     self._mid_owner[m] = path
-                cache[path] = {"sig": sig, "agg": agg, "mids": mids}
+                cache[path] = {"sig": sig, "v": PARSE_V, "agg": agg, "mids": mids}
                 changed = True
             # Entries whose transcript has been deleted are kept on purpose: Claude Code removes
             # transcripts after cleanupPeriodDays, and dropping them here erased the usage history.
@@ -704,8 +708,10 @@ class Store:
             kept = sum(1 for path in cache if path not in on_disk)
             # aggregate: day -> (project, model, entrypoint, billing) -> row
             days = {}
+            speed = {}
             for entry in cache.values():
                 for a in entry["agg"]:
+                    self._add_speed(speed, a)
                     rows = days.setdefault(a["day"], {})
                     project = self.project_name(a.get("cwd"), a.get("entrypoint"))
                     billing = a.get("billing") or "subscription"
@@ -725,6 +731,7 @@ class Store:
                         row["cost_usd"] = (row["cost_usd"] or 0) + cost
             with self.lock:
                 self.local_days = {d: list(r.values()) for d, r in days.items()}
+                self.speed_days = {d: list(r.values()) for d, r in speed.items()}
                 self.status["local"].update(last_ok=iso(utcnow()), last_error=None, files=len(files), kept=kept)
         except Exception as e:
             with self.lock:
@@ -733,6 +740,31 @@ class Store:
         finally:
             with self.lock:
                 self.status["local"]["running"] = False
+
+    @staticmethod
+    def _add_speed(speed, a):
+        """Fold one transcript aggregate into the fast-versus-standard rows: day -> (model, fast, sdk) -> row.
+
+        `sdk` separates Agent SDK sessions (Apps tab) from interactive ones (Claude Code tab). `standard_usd`
+        is what the same tokens cost without the fast-mode multiplier, so cost_usd - standard_usd is
+        the premium paid for speed. seconds / timed_output are request-to-last-token time and the
+        output tokens of the messages that could be timed (see parse_transcript)."""
+        sdk = (a.get("entrypoint") or "cli").startswith("sdk")
+        flags = a.get("variant", "").split("+") if a.get("variant") else []
+        tokens = (a["uncached"], a["cache_read"], a["cache_5m"], a["cache_1h"], a["output"])
+        cost = estimate_cost(a["model"], *tokens, a.get("variant", ""), a["day"])
+        if cost is None:
+            return
+        k = (a["model"], "fast" in flags, sdk)
+        row = speed.setdefault(a["day"], {}).get(k)
+        if not row:
+            row = {"model": a["model"], "fast": "fast" in flags, "sdk": sdk, "cost_usd": 0.0, "standard_usd": 0.0,
+                   "output": 0, "requests": 0, "seconds": 0.0, "timed_output": 0, "timed": 0}
+            speed[a["day"]][k] = row
+        row["cost_usd"] += cost
+        row["standard_usd"] += estimate_cost(a["model"], *tokens, "+".join(f for f in flags if f != "fast"), a["day"])
+        for f in ("output", "requests", "seconds", "timed_output", "timed"):
+            row[f] += a.get(f, 0)
 
     GENERIC_DIRS = {"data", "state", "cache", "tmp", "var", "run", "work", "workspace"}
 
@@ -883,6 +915,7 @@ class Store:
                 "api_days": {d: v["rows"] for d, v in self.analytics_days.items()},
                 "live_days": self.live_days,
                 "local_days": self.local_days,
+                "speed_days": self.speed_days,
                 "app_log_days": self.app_log_days,
             }
 
@@ -918,6 +951,25 @@ class Store:
             threading.Thread(target=fn, daemon=True).start()
 
 
+PARSE_V = 2   # bump when parse_transcript records something new; transcripts still on disk are then re-read
+MAX_TIMED_SECONDS = 600   # a longer "request" is a sleeping laptop or a stalled connection, not generation
+
+
+def _epoch(ts):
+    try:
+        return dt.datetime.fromisoformat((ts or "").replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def _add_timing(t):
+    """Close the message being timed: t is [message id, row, request start, last record, output tokens]."""
+    if t and t[2] and t[3] and 0 < t[3] - t[2] <= MAX_TIMED_SECONDS and t[4] > 0:
+        t[1]["seconds"] += t[3] - t[2]
+        t[1]["timed_output"] += t[4]
+        t[1]["timed"] += 1
+
+
 def parse_transcript(path, clock, owner=None):
     """Aggregate one Claude Code transcript into (day, model, pricing variant) token sums.
 
@@ -925,6 +977,12 @@ def parse_transcript(path, clock, owner=None):
     with the same message id and the same (final) usage, so usage is counted once per message
     id. `owner` maps message ids to the transcript that already counts them: a resumed or
     forked session starts with a copy of the earlier messages, which are skipped here.
+
+    Speed: each row also sums `seconds` and `timed_output` over the messages that could be timed,
+    which gives end-to-end output tokens per second (waiting for the first token included). The
+    clock starts at the "api-request" record Claude Code writes when it sends the request (older
+    versions: at the user or tool-result record before it) and stops at the message's last record.
+    Other records cannot start the clock: attachments are written when the response arrives.
 
     Billing: Claude Code appends a {"type": "attachment", "attachment": {"type": "credential_org"}}
     record when (and only when) the session runs on a claude.ai login, so a transcript with one
@@ -940,6 +998,7 @@ def parse_transcript(path, clock, owner=None):
     entrypoint = None
     credential_org = None
     version = None
+    start, from_request, timing = None, False, None
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             for line in f:
@@ -951,13 +1010,18 @@ def parse_transcript(path, clock, owner=None):
                     if att.get("type") == "credential_org":
                         credential_org = att.get("organizationUuid") or "unknown"
                     continue
-                if '"usage"' not in line or '"assistant"' not in line:
+                if ('"usage"' not in line or '"assistant"' not in line) and '"api-request"' not in line and '"user"' not in line:
                     continue
                 try:
                     d = json.loads(line)
                 except ValueError:
                     continue
-                if d.get("type") != "assistant":
+                kind = d.get("type")
+                if kind != "assistant":
+                    if kind == "api-request" or (kind == "user" and not from_request):
+                        when = _epoch(d.get("timestamp"))
+                        if when:
+                            start, from_request = when, kind == "api-request"
                     continue
                 m = d.get("message") or {}
                 u = m.get("usage")
@@ -968,8 +1032,12 @@ def parse_transcript(path, clock, owner=None):
                     continue
                 mid = m.get("id") or d.get("uuid")
                 if mid in seen:
+                    if timing and timing[0] == mid:
+                        timing[3] = max(timing[3] or 0, _epoch(d.get("timestamp")) or 0)
                     continue
                 seen.add(mid)
+                _add_timing(timing)
+                timing, begun, start, from_request = None, start, None, False
                 if cwd is None and d.get("cwd"):
                     cwd = d["cwd"]
                 if entrypoint is None and d.get("entrypoint"):
@@ -992,8 +1060,10 @@ def parse_transcript(path, clock, owner=None):
                 row = agg.get(k)
                 if not row:
                     row = {"day": day, "model": model, "variant": variant, "uncached": 0, "cache_read": 0,
-                           "cache_5m": 0, "cache_1h": 0, "output": 0, "requests": 0}
+                           "cache_5m": 0, "cache_1h": 0, "output": 0, "requests": 0,
+                           "seconds": 0.0, "timed_output": 0, "timed": 0}
                     agg[k] = row
+                timing = [mid, row, begun, _epoch(ts), u.get("output_tokens", 0) or 0]
                 row["uncached"] += u.get("input_tokens", 0) or 0
                 row["cache_read"] += u.get("cache_read_input_tokens", 0) or 0
                 row["cache_5m"] += c5 or 0
@@ -1002,7 +1072,9 @@ def parse_transcript(path, clock, owner=None):
                 row["requests"] += 1
     except OSError:
         return [], []
+    _add_timing(timing)
     for row in agg.values():
+        row["seconds"] = round(row["seconds"], 2)
         row["cwd"] = cwd
         row["entrypoint"] = entrypoint or "cli"
         row["billing"] = "api" if (credential_org is None and _version_tuple(version) >= (2, 1, 281)) else "subscription"
