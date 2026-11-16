@@ -369,6 +369,13 @@ details summary { cursor: pointer; color: var(--ink-2); font-size: 13px; padding
       const transient = failing.filter(f => !stale.includes(f));
       if (transient.length) bits.push(transient.map(([name]) => name.toLowerCase()).join(', ') + ': last poll failed, retrying');
     }
+    // Price table problems: these make every estimate wrong, so they are always shown.
+    const pr = d.pricing || {};
+    const warn = [];
+    for (const m of pr.unpriced || []) warn.push(`<div class="err"><strong>No price for ${esc(m)}:</strong> its usage is shown as $0. Add it to PRICING in server.py.</div>`);
+    for (const m of pr.fallback || []) warn.push(`<div class="err"><strong>${esc(m)}:</strong> this model has no row of its own in PRICING, so its estimates may be wrong. Add one in server.py.</div>`);
+    for (const x of pr.drift || []) warn.push(`<div class="err"><strong>Prices may have changed for ${esc(x.model)}:</strong> from ${x.from} to ${x.to} the estimate is ${fmtUSD(x.estimate_usd)} but Anthropic's list cost is ${fmtUSD(x.list_usd)}. Append the new rates, with the date they took effect, to PRICING in server.py.</div>`);
+    notice = warn.join('') + notice;
     document.getElementById('status').textContent = bits.join(' · ');
     document.getElementById('notice').innerHTML = notice ? `<div class="notice">${notice}</div>` : '';
 

@@ -91,8 +91,27 @@ Without a key the dashboard still runs and shows the two local sources only.
 List prices per model live in the `PRICING` table at the top of `server.py` (USD per million
 tokens: input, output, cache read, 5-minute cache write, 1-hour cache write; longest model-name
 prefix wins). They are only used for the estimated columns; the Analytics API supplies billed cost.
-Update the table when Anthropic changes prices or ships a new model
-(source: <https://platform.claude.com/docs/en/about-claude/pricing>).
+Source: <https://platform.claude.com/docs/en/about-claude/pricing>.
+
+**Prices are dated.** Every entry in `PRICING` (and the fast-mode, US-only, batch, long-prompt and
+web-search modifiers beside it) is a history, `[(effective_from, value), ...]`, and usage is priced
+with the value in force on the day it happened. Estimates are recomputed from stored token counts
+on every refresh, so the table is the single place the time series depends on:
+
+- **When a price changes, append an entry** with the first day the new price applies. Never edit an
+  existing entry: that reprices every past day at the new rate.
+  `"claude-opus-5-5": [("", (4.0, 20.0, 0.20, 5.0, 8.0)), ("2027-02-01", (3.0, 15.0, 0.15, 3.75, 6.0))],`
+- **When a model ships, add a row for it.** `""` as the date means "since launch".
+- The date is a logical day (the dashboard's 4 am Pacific boundary), not an instant, so on the day
+  of a change the few hours before or after Anthropic's own cut-over are priced at the wrong rate.
+- Billed API cost is not affected by any of this: it comes from Anthropic per day as billed.
+
+The page warns, in the banner at the top, when the table looks wrong (`pricing` in `/api/summary`):
+a model with no price at all (shown as $0), a model with no row of its own that is being priced
+as an older one, and **drift**: for each model, over its three most recent complete days of API
+usage, the estimate is compared with the list cost Anthropic reports for the same tokens, and a
+gap over 5% is flagged. Drift is what catches a price change nobody entered, but only for models
+that run on an API key; a model used only on the subscription has nothing to compare against.
 
 On top of the table, each usage record is priced with its own modifiers: fast mode (`usage.speed`
 `fast`, 2x every rate), US-only inference (`inference_geo` `us`, 1.1x), batch (`service_tier`

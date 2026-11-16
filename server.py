@@ -62,53 +62,88 @@ DEFAULT_CONFIG = {
 
 # USD per million tokens: (input, output, cache_read, cache_write_5m, cache_write_1h).
 # Source: https://platform.claude.com/docs/en/about-claude/pricing, checked 2026-11-16.
-# Longest prefix wins, so a new model with no row of its own is silently priced as its
-# predecessor (Fable 5.2 was priced as Fable 5 until 2026-11-16): add a row for every release.
+#
+# Every price is a history: [(effective_from, value), ...] in date order, where effective_from is
+# the first logical day ('YYYY-MM-DD') the value applies and "" means "since launch". Usage is
+# priced with the value in force on the day it happened, so the time series stays right when
+# prices change. WHEN A PRICE CHANGES, APPEND an entry; never edit an old one, or every past day
+# is repriced at the new rate:
+#     "claude-opus-5-5": [("", (4.0, 20.0, 0.20, 5.0, 8.0)), ("2027-02-01", (3.0, 15.0, 0.15, 3.75, 6.0))],
+#
+# Longest prefix wins, so a new model with no row of its own is priced as its predecessor
+# (Fable 5.2 was priced as Fable 5 until 2026-11-16): add a row for every release. The page
+# warns about any model priced that way (Store.pricing_report).
 PRICING = {
-    "claude-fable-5-2":  (8.0, 40.0, 0.20, 10.0, 16.0),
-    "claude-mythos-5-2": (8.0, 40.0, 0.20, 10.0, 16.0),
-    "claude-fable-5-1":  (10.0, 50.0, 0.25, 12.5, 20.0),
-    "claude-mythos-5-1": (10.0, 50.0, 0.25, 12.5, 20.0),
-    "claude-fable-5":    (10.0, 50.0, 1.00, 12.5, 20.0),
-    "claude-mythos-5":   (10.0, 50.0, 1.00, 12.5, 20.0),
-    "claude-opus-5-5":   (4.0, 20.0, 0.20, 5.0, 8.0),
-    "claude-opus-5":     (5.0, 25.0, 0.50, 6.25, 10.0),
-    "claude-opus-4-8":   (5.0, 25.0, 0.50, 6.25, 10.0),
-    "claude-opus-4-7":   (5.0, 25.0, 0.50, 6.25, 10.0),
-    "claude-opus-4-6":   (5.0, 25.0, 0.50, 6.25, 10.0),
-    "claude-opus-4-5":   (5.0, 25.0, 0.50, 6.25, 10.0),
-    "claude-opus-4-1":   (15.0, 75.0, 1.50, 18.75, 30.0),
-    "claude-opus-4":     (15.0, 75.0, 1.50, 18.75, 30.0),
-    "claude-sonnet-5-5": (2.0, 10.0, 0.10, 2.5, 4.0),
-    "claude-sonnet-5":   (2.0, 10.0, 0.20, 2.5, 4.0),
-    "claude-sonnet-4-6": (3.0, 15.0, 0.30, 3.75, 6.0),
-    "claude-sonnet-4-5": (3.0, 15.0, 0.30, 3.75, 6.0),
-    "claude-sonnet-4":   (3.0, 15.0, 0.30, 3.75, 6.0),
-    "claude-sonnet-3-7": (3.0, 15.0, 0.30, 3.75, 6.0),
-    "claude-haiku-5-5":  (0.10, 0.50, 0.01, 0.125, 0.20),
-    "claude-haiku-4-5":  (1.0, 5.0, 0.10, 1.25, 2.0),
-    "claude-haiku-3-5":  (0.80, 4.0, 0.08, 1.0, 1.6),
-    "claude-3-5-haiku":  (0.80, 4.0, 0.08, 1.0, 1.6),
+    "claude-fable-5-2":  [("", (8.0, 40.0, 0.20, 10.0, 16.0))],
+    "claude-mythos-5-2": [("", (8.0, 40.0, 0.20, 10.0, 16.0))],
+    "claude-fable-5-1":  [("", (10.0, 50.0, 0.25, 12.5, 20.0))],
+    "claude-mythos-5-1": [("", (10.0, 50.0, 0.25, 12.5, 20.0))],
+    "claude-fable-5":    [("", (10.0, 50.0, 1.00, 12.5, 20.0))],
+    "claude-mythos-5":   [("", (10.0, 50.0, 1.00, 12.5, 20.0))],
+    "claude-opus-5-5":   [("", (4.0, 20.0, 0.20, 5.0, 8.0))],
+    "claude-opus-5":     [("", (5.0, 25.0, 0.50, 6.25, 10.0))],
+    "claude-opus-4-8":   [("", (5.0, 25.0, 0.50, 6.25, 10.0))],
+    "claude-opus-4-7":   [("", (5.0, 25.0, 0.50, 6.25, 10.0))],
+    "claude-opus-4-6":   [("", (5.0, 25.0, 0.50, 6.25, 10.0))],
+    "claude-opus-4-5":   [("", (5.0, 25.0, 0.50, 6.25, 10.0))],
+    "claude-opus-4-1":   [("", (15.0, 75.0, 1.50, 18.75, 30.0))],
+    "claude-opus-4":     [("", (15.0, 75.0, 1.50, 18.75, 30.0))],
+    "claude-sonnet-5-5": [("", (2.0, 10.0, 0.10, 2.5, 4.0))],
+    "claude-sonnet-5":   [("", (2.0, 10.0, 0.20, 2.5, 4.0))],
+    "claude-sonnet-4-6": [("", (3.0, 15.0, 0.30, 3.75, 6.0))],
+    "claude-sonnet-4-5": [("", (3.0, 15.0, 0.30, 3.75, 6.0))],
+    "claude-sonnet-4":   [("", (3.0, 15.0, 0.30, 3.75, 6.0))],
+    "claude-sonnet-3-7": [("", (3.0, 15.0, 0.30, 3.75, 6.0))],
+    "claude-haiku-5-5":  [("", (0.10, 0.50, 0.01, 0.125, 0.20))],
+    "claude-haiku-4-5":  [("", (1.0, 5.0, 0.10, 1.25, 2.0))],
+    "claude-haiku-3-5":  [("", (0.80, 4.0, 0.08, 1.0, 1.6))],
+    "claude-3-5-haiku":  [("", (0.80, 4.0, 0.08, 1.0, 1.6))],
 }
 
 
-def price_for(model):
-    if not model:
-        return None
+def dated(history, day=None):
+    """The value in force on logical day `day` from [(effective_from, value), ...]; the latest when the day is unknown."""
+    if not day or day == "unknown":
+        return history[-1][1]
+    value = history[0][1]
+    for start, v in history:
+        if start <= day:
+            value = v
+    return value
+
+
+def price_prefix(model):
+    """The PRICING row a model id is priced by (longest matching prefix), or None."""
     best = None
-    for prefix, rates in PRICING.items():
-        if model.startswith(prefix) and (best is None or len(prefix) > len(best)):
+    for prefix in PRICING:
+        if model and model.startswith(prefix) and (best is None or len(prefix) > len(best)):
             best = prefix
-    return PRICING.get(best)
+    return best
+
+
+def price_for(model, day=None):
+    best = price_prefix(model)
+    return dated(PRICING[best], day) if best else None
+
+
+def priced_by_fallback(model):
+    """True when a model has no row of its own and is priced as an older one.
+
+    A dated snapshot ("-20251001"), "-latest" or a "[1m]" context suffix on a listed model is
+    the same model; anything else left over ("claude-fable-5" matching "claude-fable-5-3") is not.
+    """
+    best = price_prefix(model)
+    return bool(best) and not re.fullmatch(r"(-\d{8}|-latest)?(\[\w+\])?", model[len(best):])
 
 
 # Modifiers on top of the table. A usage record's modifiers travel as a "variant" string such
 # as "", "fast" or "fast+us" (see usage_variant), so tokens are summed per variant and priced once.
-HAIKU_55_LONG = (0.50, 2.50, 0.05, 0.625, 1.0)   # Haiku 5.5 requests whose prompt is over 100K tokens
-VARIANT_MULT = {"fast": 2.0,    # fast mode: 2x on every rate, cache rates included
-                "us": 1.1,      # inference_geo "us"
-                "batch": 0.5}   # Message Batches
-WEB_SEARCH_USD = 0.01           # $10 per 1,000 searches
+# These are dated histories too (see above): append, never edit.
+HAIKU_55_LONG = [("", (0.50, 2.50, 0.05, 0.625, 1.0))]   # Haiku 5.5 requests whose prompt is over 100K tokens
+VARIANT_MULT = {"fast": [("", 2.0)],    # fast mode: 2x on every rate, cache rates included
+                "us": [("", 1.1)],      # inference_geo "us"
+                "batch": [("", 0.5)]}   # Message Batches
+WEB_SEARCH_USD = [("", 0.01)]           # $10 per 1,000 searches
 
 
 def usage_variant(model, u, prompt_tokens=0):
@@ -126,17 +161,17 @@ def usage_variant(model, u, prompt_tokens=0):
     return "+".join(flags)
 
 
-def estimate_cost(model, uncached, cache_read, cache_5m, cache_1h, output, variant=""):
-    """List-price USD for these tokens, or None when the model is unpriced."""
-    r = price_for(model)
+def estimate_cost(model, uncached, cache_read, cache_5m, cache_1h, output, variant="", day=None):
+    """List-price USD for these tokens at the prices in force on `day`, or None when the model is unpriced."""
+    r = price_for(model, day)
     if not r:
         return None
     mult = 1.0
     for flag in (variant.split("+") if variant else ()):
         if flag == "long":
-            r = HAIKU_55_LONG
-        else:
-            mult *= VARIANT_MULT.get(flag, 1.0)
+            r = dated(HAIKU_55_LONG, day)
+        elif flag in VARIANT_MULT:
+            mult *= dated(VARIANT_MULT[flag], day)
     return mult * (uncached * r[0] + output * r[1] + cache_read * r[2] + cache_5m * r[3] + cache_1h * r[4]) / 1e6
 
 
@@ -593,11 +628,11 @@ class Store:
                 one = new_row(*k)
                 add_usage(one, r)
                 cost = estimate_cost(one["model"], one["uncached"], one["cache_read"], one["cache_5m"],
-                                     one["cache_1h"], one["output"], usage_variant(one["model"], r))
+                                     one["cache_1h"], one["output"], usage_variant(one["model"], r), day)
                 row = rows.get(k) or new_row(*k)
                 add_usage(row, r)
                 if cost is not None:
-                    row["cost_usd"] = (row["cost_usd"] or 0) + cost + one["web_search"] * WEB_SEARCH_USD
+                    row["cost_usd"] = (row["cost_usd"] or 0) + cost + one["web_search"] * dated(WEB_SEARCH_USD, day)
                 row["estimated"] = True
                 rows[k] = row
         return days
@@ -685,7 +720,7 @@ class Store:
                         row[f] += a[f]
                     # priced per variant (fast mode, long Haiku prompts...) before folding into the row
                     cost = estimate_cost(a["model"], a["uncached"], a["cache_read"], a["cache_5m"], a["cache_1h"],
-                                         a["output"], a.get("variant", ""))
+                                         a["output"], a.get("variant", ""), a["day"])
                     if cost is not None:
                         row["cost_usd"] = (row["cost_usd"] or 0) + cost
             with self.lock:
@@ -771,7 +806,7 @@ class Store:
                     for f in ("uncached", "cache_read", "cache_5m", "cache_1h", "output", "requests"):
                         row[f] += a[f]
                     cost = estimate_cost(model, a["uncached"], a["cache_read"], a["cache_5m"], a["cache_1h"],
-                                         a["output"], variant)
+                                         a["output"], variant, day)
                     if cost is not None:
                         row["cost_usd"] = (row["cost_usd"] or 0) + cost
             with self.lock:
@@ -784,6 +819,46 @@ class Store:
         finally:
             with self.lock:
                 self.status["app_logs"]["running"] = False
+
+    # ---------------- is the price table still right?
+    def pricing_report(self):
+        """What the page should warn about: models with no price, models priced as an older
+        model, and models whose estimate has drifted from Anthropic's own list cost.
+
+        Drift is the check that catches a price change nobody entered: for each model, over its
+        three most recent complete days of API usage, tokens priced from PRICING are compared
+        with the list cost the Analytics API reports for the same rows.
+        """
+        today = self.clock.today().isoformat()
+        models = set()
+        per = {}   # model -> {day: [anthropic list usd, our estimate]}
+        for day, v in self.analytics_days.items():
+            for r in v["rows"]:
+                if not r.get("model"):
+                    continue
+                models.add(r["model"])
+                if day >= today or r.get("list_usd") is None or r.get("estimated"):
+                    continue
+                est = estimate_cost(r["model"], r["uncached"], r["cache_read"], r["cache_5m"], r["cache_1h"],
+                                    r["output"], "", day)
+                pair = per.setdefault(r["model"], {}).setdefault(day, [0.0, 0.0])
+                pair[0] += r["list_usd"]
+                pair[1] += est or 0
+        for days in (self.live_days, self.local_days, self.app_log_days):
+            for rows in days.values():
+                models.update(r["model"] for r in rows if r.get("model"))
+        drift = []
+        for model, by_day in per.items():
+            recent = sorted(d for d, (lst, _) in by_day.items() if lst > 0)[-3:]
+            lst = sum(by_day[d][0] for d in recent)
+            est = sum(by_day[d][1] for d in recent)
+            if lst >= 1 and abs(est - lst) / lst > 0.05:
+                drift.append({"model": model, "from": recent[0], "to": recent[-1],
+                              "list_usd": round(lst, 2), "estimate_usd": round(est, 2)})
+        models.discard("unknown")
+        return {"unpriced": sorted(m for m in models if not price_prefix(m)),
+                "fallback": sorted(f"{m} (priced as {price_prefix(m)})" for m in models if priced_by_fallback(m)),
+                "drift": drift}
 
     # ---------------- snapshot for the UI
     def snapshot(self):
@@ -802,6 +877,7 @@ class Store:
                 "config": {"history_days": self.cfg["history_days"], "pricing_models": sorted(PRICING),
                            "timezone": self.clock.tz_name, "day_start_hour": self.clock.start_hour},
                 "today": self.clock.today().isoformat(),
+                "pricing": self.pricing_report(),
                 "keys": key_info,
                 "workspaces": wss,
                 "api_days": {d: v["rows"] for d, v in self.analytics_days.items()},
