@@ -129,17 +129,16 @@ h2.section { font-size: 16px; font-weight: 600; margin: 8px 0 2px; }
     <h2 class="section">Fast mode versus standard speed</h2>
     <p class="sub" id="fastHint"></p>
     <div class="kpis" id="fastKpis"></div>
-    <div class="grid two">
-      <div class="card">
-        <h2>Daily cost by speed</h2>
-        <p class="hint">USD per day at list prices: standard speed and fast mode side by side.</p>
-        <div class="chart"><canvas id="fastCostChart"></canvas></div>
+    <div class="card">
+      <div class="cardhead">
+        <h2 id="fastTitle">Daily cost by speed</h2>
+        <div class="seg small" id="fastMetric" title="Show the bars in dollars or in tokens">
+          <button data-metric="cost" aria-pressed="true">$</button>
+          <button data-metric="tokens" aria-pressed="false">Tokens</button>
+        </div>
       </div>
-      <div class="card">
-        <h2>Daily tokens by speed</h2>
-        <p class="hint">Tokens of all types per day, side by side in the same way.</p>
-        <div class="chart"><canvas id="fastTokChart"></canvas></div>
-      </div>
+      <p class="hint" id="fastChartHint"></p>
+      <div class="chart"><canvas id="fastChart"></canvas></div>
     </div>
   </div>
 
@@ -173,7 +172,7 @@ h2.section { font-size: 16px; font-weight: 600; margin: 8px 0 2px; }
     local: [['project', 'Project'], ['model', 'Model']],
   };
   const SRC_API = 'API key', SRC_SDK = 'Agent SDK', BILL_API = 'Billed to API', BILL_SUB = 'Subscription';
-  const state = { tab: 'apps', range: '30', groupBy: 'app', costMetric: 'cost', data: null, charts: {} };
+  const state = { tab: 'apps', range: '30', groupBy: 'app', costMetric: 'cost', fastMetric: 'cost', data: null, charts: {} };
 
   // a palette slot name ('--s3') resolves to its themed value; a literal color passes through
   const css = (v) => v.startsWith('--') ? getComputedStyle(document.documentElement).getPropertyValue(v).trim() : v;
@@ -560,15 +559,15 @@ h2.section { font-size: 16px; font-weight: 600; margin: 8px 0 2px; }
       { label: 'Standard speed', backgroundColor: css('--s1'), data: days.map(day => perDay[day] ? perDay[day].std[k] : 0) },
       { label: 'Fast mode', backgroundColor: css('--s2'), data: days.map(day => perDay[day] ? perDay[day].fast[k] : 0) },
     ];
-    stackedBar('fastCostChart', labels, series('cost'), fmtUSD, fmtUSD);
-    stackedBar('fastTokChart', labels, series('tokens'), fmtTok, (v) => fmtTok(v) + ' tokens');
+    const inTokens = state.fastMetric === 'tokens';
+    document.getElementById('fastTitle').textContent = `Daily ${inTokens ? 'tokens' : 'cost'} by speed`;
+    document.getElementById('fastChartHint').textContent = (inTokens ? 'Tokens of all types per day' : 'USD per day at list prices') + ': standard speed and fast mode side by side.';
+    stackedBar('fastChart', labels, series(inTokens ? 'tokens' : 'cost'), inTokens ? fmtTok : fmtUSD, inTokens ? (v) => fmtTok(v) + ' tokens' : fmtUSD);
     // side by side, not stacked: the two speeds are compared with each other, on a shared baseline
-    for (const id of ['fastCostChart', 'fastTokChart']) {
-      const c = state.charts[id];
-      c.options.scales.x.stacked = false; c.options.scales.y.stacked = false;
-      c.data.datasets.forEach(ds => Object.assign(ds, { barPercentage: 0.95, categoryPercentage: 0.8 }));
-      c.update();
-    }
+    const c = state.charts.fastChart;
+    c.options.scales.x.stacked = false; c.options.scales.y.stacked = false;
+    c.data.datasets.forEach(ds => Object.assign(ds, { barPercentage: 0.95, categoryPercentage: 0.8 }));
+    c.update();
   }
 
   function setGroupOptions() {
@@ -604,6 +603,13 @@ h2.section { font-size: 16px; font-weight: 600; margin: 8px 0 2px; }
   document.getElementById('costMetric').addEventListener('click', (e) => {
     const b = e.target.closest('button'); if (!b) return;
     state.costMetric = b.dataset.metric;
+    for (const x of e.currentTarget.querySelectorAll('button')) x.setAttribute('aria-pressed', x === b);
+    render();
+  });
+
+  document.getElementById('fastMetric').addEventListener('click', (e) => {
+    const b = e.target.closest('button'); if (!b) return;
+    state.fastMetric = b.dataset.metric;
     for (const x of e.currentTarget.querySelectorAll('button')) x.setAttribute('aria-pressed', x === b);
     render();
   });
