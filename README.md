@@ -128,7 +128,7 @@ under 1%. On 2026-11-16 it was $4,384.94 against $4,385.71 over 105 days.
 ### Fast mode versus standard speed
 
 Both tabs have a section comparing fast mode with standard speed, for the selected range: what
-was spent on each, in dollars and in tokens (two daily stacked-bar charts and their totals), how
+was spent on each, in dollars and in tokens (two daily charts with the two speeds side by side and their totals), how
 much of the fast-mode spend was the 2x premium (`cost_usd - standard_usd`, the same tokens priced
 without the multiplier), and measured output speed. The Claude Code tab covers interactive sessions and the Apps tab covers Agent SDK
 sessions; both come from transcripts (`speed_days` in `/api/summary`), so calls made with an API

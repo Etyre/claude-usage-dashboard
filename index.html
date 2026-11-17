@@ -132,12 +132,12 @@ h2.section { font-size: 16px; font-weight: 600; margin: 8px 0 2px; }
     <div class="grid two">
       <div class="card">
         <h2>Daily cost by speed</h2>
-        <p class="hint">USD per day at list prices, split into standard speed and fast mode.</p>
+        <p class="hint">USD per day at list prices: standard speed and fast mode side by side.</p>
         <div class="chart"><canvas id="fastCostChart"></canvas></div>
       </div>
       <div class="card">
         <h2>Daily tokens by speed</h2>
-        <p class="hint">Tokens of all types per day, split the same way.</p>
+        <p class="hint">Tokens of all types per day, side by side in the same way.</p>
         <div class="chart"><canvas id="fastTokChart"></canvas></div>
       </div>
     </div>
@@ -562,6 +562,13 @@ h2.section { font-size: 16px; font-weight: 600; margin: 8px 0 2px; }
     ];
     stackedBar('fastCostChart', labels, series('cost'), fmtUSD, fmtUSD);
     stackedBar('fastTokChart', labels, series('tokens'), fmtTok, (v) => fmtTok(v) + ' tokens');
+    // side by side, not stacked: the two speeds are compared with each other, on a shared baseline
+    for (const id of ['fastCostChart', 'fastTokChart']) {
+      const c = state.charts[id];
+      c.options.scales.x.stacked = false; c.options.scales.y.stacked = false;
+      c.data.datasets.forEach(ds => Object.assign(ds, { barPercentage: 0.95, categoryPercentage: 0.8 }));
+      c.update();
+    }
   }
 
   function setGroupOptions() {
