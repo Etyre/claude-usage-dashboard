@@ -125,6 +125,11 @@ A quick check that the table is right: for every model that has run on an API ke
 from tokens should match the Analytics API's own list cost (`list_usd` in `/api/summary`) to well
 under 1%. On 2026-11-16 it was $4,384.94 against $4,385.71 over 105 days.
 
+On the Apps tab the daily chart draws each group twice: solid for what was billed to API keys,
+stacked from the baseline, so the solid height of a bar is the billed figure the tiles report;
+then hatched in the same color for subscription use (Agent SDK), which is a list-price value and
+was not billed. The tooltip footer gives the two totals.
+
 ### Fast mode versus standard speed
 
 Both tabs have a section comparing fast mode with standard speed, for the selected range: what

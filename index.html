@@ -67,6 +67,9 @@ th { color: var(--ink-2); font-weight: 500; font-size: 12px; }
 th:first-child, td:first-child { text-align: left; }
 td.name { white-space: normal; }
 .sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 7px; vertical-align: -1px; }
+.sw.key { margin: 0 5px 0 2px; }
+.sw.key.solid { background: var(--ink-2); }
+.sw.key.hatched { background: repeating-linear-gradient(135deg, var(--ink-2) 0 2px, transparent 2px 5px); outline: 1px solid var(--border); }
 .spark { vertical-align: middle; }
 details summary { cursor: pointer; color: var(--ink-2); font-size: 13px; padding: 4px 0; }
 .foot { color: var(--muted); font-size: 12px; margin-top: 12px; }
@@ -325,6 +328,16 @@ h2.section { font-size: 16px; font-weight: 600; margin: 8px 0 2px; }
     state.charts[id] = new Chart(document.getElementById(id), { type: 'bar', data: { labels, datasets: [{ data: values, backgroundColor: colors, borderRadius: 3, borderSkipped: false, barThickness: 16 }] }, options: opts });
   }
 
+  // Diagonal stripes of a series color: marks subscription use, which is valued at list price, not billed.
+  function hatch(color) {
+    const c = document.createElement('canvas'); c.width = c.height = 8;
+    const x = c.getContext('2d');
+    x.fillStyle = color; x.globalAlpha = 0.22; x.fillRect(0, 0, 8, 8);
+    x.globalAlpha = 1; x.strokeStyle = color; x.lineWidth = 2;
+    x.beginPath(); x.moveTo(-2, 6); x.lineTo(6, -2); x.moveTo(2, 10); x.lineTo(10, 2); x.stroke();
+    return x.createPattern(c, 'repeat');
+  }
+
   function sparkline(values, color) {
     const w = 84, h = 22, max = Math.max(...values, 1e-9);
     const pts = values.map((v, i) => `${(i / Math.max(values.length - 1, 1) * (w - 2) + 1).toFixed(1)},${(h - 2 - (v / max) * (h - 4)).toFixed(1)}`);
@@ -461,11 +474,38 @@ h2.section { font-size: 16px; font-weight: 600; margin: 8px 0 2px; }
     }
     if (others.length < 2) others = [];
     const top = ranked.filter(n => !others.includes(n));
-    const seriesFor = (names, label, col) => ({ label, backgroundColor: col, data: days.map(day => names.reduce((s, n) => s + metric(byDayGroup[day + '|' + n]), 0)) });
-    const costSets = top.map(n => seriesFor([n], n, color(n)));
-    if (others.length) costSets.push(seriesFor(others, 'Other (' + others.length + ')', css('--neutral')));
+    // On the Apps tab each group is drawn twice: solid for what was billed to API keys, stacked from
+    // the baseline so the solid height is the billed total the tiles report, then hatched in the
+    // same color for subscription use, which is only a list-price value.
+    const byDayGroupBill = sumBy(inRange, f => f.day + '|' + f[dim] + '|' + (f.billing === BILL_SUB ? 's' : 'b'));
+    const seriesFor = (names, label, col, part) => ({ label: label + (part === 's' ? ' (subscription, list price)' : ''), group: label, part,
+      backgroundColor: part === 's' ? hatch(col) : col,
+      data: days.map(day => names.reduce((s, n) => s + metric(part ? byDayGroupBill[day + '|' + n + '|' + part] : byDayGroup[day + '|' + n]), 0)) });
+    const groupsDrawn = top.map(n => [[n], n, color(n)]);
+    if (others.length) groupsDrawn.push([others, 'Other (' + others.length + ')', css('--neutral')]);
+    const costSets = (isApi ? ['b', 's'] : [null]).flatMap(part => groupsDrawn.map(g => seriesFor(...g, part)))
+      .filter(ds => !ds.part || ds.data.some(v => v > 0));
     const labels = days.map(dd => dd.slice(5));
     stackedBar('costChart', labels, costSets, fmtMetric, inTokens ? (v) => fmtTok(v) + ' tokens' : fmtUSD);
+    if (isApi) {
+      const c = state.charts.costChart, sets = c.data.datasets;
+      // one legend entry per group, in its solid color; clicking it hides both of its parts
+      c.options.plugins.legend.labels.generateLabels = (chart) => groupsDrawn.map(([, label, col]) => {
+        const idx = sets.findIndex(ds => ds.group === label);
+        return { text: label, fillStyle: col, strokeStyle: col, lineWidth: 0, borderRadius: 2, fontColor: css('--ink-2'), hidden: idx < 0 || !chart.isDatasetVisible(idx), datasetIndex: idx };
+      }).filter(l => l.datasetIndex >= 0);
+      c.options.plugins.legend.onClick = (e, item, legend) => {
+        const show = !legend.chart.isDatasetVisible(item.datasetIndex);
+        sets.forEach((ds, i) => { if (ds.group === item.text) legend.chart.setDatasetVisibility(i, show); });
+        legend.chart.update();
+      };
+      const fmtTip = inTokens ? (v) => fmtTok(v) + ' tokens' : fmtUSD;
+      c.options.plugins.tooltip.callbacks.footer = (items) => {
+        const sumPart = (p) => items.reduce((t, i) => t + (i.dataset.part === p ? i.raw || 0 : 0), 0);
+        return [`Billed to API: ${fmtTip(sumPart('b'))}`, `Subscription${inTokens ? '' : ', list price'}: ${fmtTip(sumPart('s'))}`];
+      };
+      c.update();
+    }
 
     // daily tokens by type
     stackedBar('tokChart', labels, TOKEN_TYPES.map(([k, label, slot]) => ({ label, backgroundColor: css(slot), data: days.map(day => (byDay[day] || {})[k] || 0) })), fmtTok, (v) => fmtTok(v) + ' tokens');
@@ -512,7 +552,8 @@ h2.section { font-size: 16px; font-weight: 600; margin: 8px 0 2px; }
         ? 'Token counts come from Anthropic\'s usage report (fresh within about 5 minutes) per API key and model. Costs are estimated at list prices (input, output, cache read, cache writes); the Console\'s Cost page has the billed figures. An Admin API key would switch this to billed costs. ' + dayLabel() + '.'
         : 'API-key usage: costs for completed days come from Anthropic billing data (post-discount, refreshed about every 4 hours); today, and any day billing has not yet covered, are estimated from live token counts at list prices. Agent SDK usage runs on the Claude subscription, which is not billed per token: it is read from the SDK\'s local transcripts and from per-call logs apps write to ~/.claude/app-usage, and valued at list prices; the period tiles show billed dollars and list that value separately. ' + dayLabel() + '.')
       : 'Interactive Claude Code sessions, parsed from ~/.claude/projects transcripts (Agent SDK sessions are under Apps). Sessions run on an API key rather than the login are included here too, and also appear under Apps with billed cost. Subagent transcripts are included, and a message copied into a resumed or forked session is counted once. Costs are estimates at list prices (input, output, cache read, 5-minute and 1-hour cache writes, with fast mode at twice the standard rate; the fast mode section compares that with standard speed), which matches what Claude Code reports with /cost. Sessions stay in the history after Claude Code deletes their transcripts. Subscription plans are not billed per token; this shows what the usage would cost on the API. Helper-model calls (titles, classifiers) are not in the transcripts. ' + dayLabel() + '.';
-    document.getElementById('dailyHint').textContent = (inTokens ? 'Tokens of all types per day (' : 'USD per day (') + dayLabel() + '). Hover a bar for the breakdown.';
+    document.getElementById('dailyHint').innerHTML = esc((inTokens ? 'Tokens of all types per day (' : 'USD per day (') + dayLabel() + '). ') +
+      (isApi ? '<span class="sw key solid"></span>Solid: billed to API keys. <span class="sw key hatched"></span>Hatched: subscription use' + (inTokens ? '' : ' at list price') + ', not billed. ' : '') + 'Hover a bar for the breakdown.';
   }
 
   // ---- fast mode versus standard speed (Claude Code tab). Standard is --s1 and fast is --s2 in both charts.
