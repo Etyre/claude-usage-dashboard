@@ -131,14 +131,14 @@ h2.section { font-size: 16px; font-weight: 600; margin: 8px 0 2px; }
     <div class="kpis" id="fastKpis"></div>
     <div class="grid two">
       <div class="card">
-        <h2>What fast mode cost, per day</h2>
-        <p class="hint">The fast-mode messages only: what their tokens cost at standard speed, and what fast mode added.</p>
+        <h2>Daily cost by speed</h2>
+        <p class="hint">USD per day at list prices, split into standard speed and fast mode.</p>
         <div class="chart"><canvas id="fastCostChart"></canvas></div>
       </div>
       <div class="card">
-        <h2>Output speed by model</h2>
-        <p class="hint">Output tokens per second over the selected range, measured from your own sessions.</p>
-        <div class="chart"><canvas id="speedChart"></canvas></div>
+        <h2>Daily tokens by speed</h2>
+        <p class="hint">Tokens of all types per day, split the same way.</p>
+        <div class="chart"><canvas id="fastTokChart"></canvas></div>
       </div>
     </div>
   </div>
@@ -521,17 +521,19 @@ h2.section { font-size: 16px; font-weight: 600; margin: 8px 0 2px; }
   const fmtDur = (s) => s == null || !isFinite(s) ? '—' : s < 90 ? Math.round(s) + ' s' : s < 5400 ? (s / 60).toFixed(1) + ' min' : (s / 3600).toFixed(1) + ' h';
   function renderFast(d, days, labels, isApi, tile) {
     const daySet = new Set(days);
-    const blank = () => ({ cost: 0, standard: 0, output: 0, requests: 0, seconds: 0, timedOutput: 0, timed: 0 });
-    const add = (o, r) => { o.cost += r.cost_usd; o.standard += r.standard_usd; o.output += r.output; o.requests += r.requests;
+    const blank = () => ({ cost: 0, standard: 0, tokens: 0, output: 0, requests: 0, seconds: 0, timedOutput: 0, timed: 0 });
+    const add = (o, r) => { o.cost += r.cost_usd; o.standard += r.standard_usd; o.tokens += r.tokens; o.output += r.output; o.requests += r.requests;
       o.seconds += r.seconds || 0; o.timedOutput += r.timed_output || 0; o.timed += r.timed || 0; };
-    const inR = {}, all = {}, perDay = {};          // model -> { std, fast } in range and over all history; day -> fast totals
+    const inR = {}, all = {}, perDay = {};          // model -> { std, fast } in range and over all history; day -> { std, fast }
+    const total = { std: blank(), fast: blank() };
     const slot = (m, model) => m[model] || (m[model] = { std: blank(), fast: blank() });
     for (const [day, rows] of Object.entries(d.speed_days || {})) for (const r of rows) {
       if (r.sdk !== isApi) continue;   // Apps tab: Agent SDK sessions; Claude Code tab: interactive ones
       add(slot(all, r.model)[r.fast ? 'fast' : 'std'], r);
       if (!daySet.has(day)) continue;
       add(slot(inR, r.model)[r.fast ? 'fast' : 'std'], r);
-      if (r.fast) add(perDay[day] || (perDay[day] = blank()), r);
+      add((perDay[day] || (perDay[day] = { std: blank(), fast: blank() }))[r.fast ? 'fast' : 'std'], r);
+      add(total[r.fast ? 'fast' : 'std'], r);
     }
     const rate = (o) => o.timed >= 5 && o.seconds > 0 ? o.timedOutput / o.seconds : null;   // too few messages say nothing
     // Standard speed to compare a model's fast messages with: the range's own, else all history.
@@ -554,25 +556,12 @@ h2.section { font-size: 16px; font-weight: 600; margin: 8px 0 2px; }
       tile('Waiting time saved', comparable ? fmtDur(saved) : '—', { text: comparable && saved > 0 ? `about ${fmtUSD(premium / (saved / 60))} per minute saved` : '' });
     document.getElementById('fastHint').textContent = 'Fast mode produces output faster at twice the price of every token. ' + (isApi ? 'This section covers Agent SDK sessions, from their transcripts; calls made with an API key are not in it. Costs are list-price values. ' : 'Costs here are list-price values, like the rest of this tab. ') + 'Speed is end to end: output tokens divided by the time from sending a request to its last token, so the wait for the first token counts.';
 
-    stackedBar('fastCostChart', labels, [
-      { label: 'Same tokens at standard speed', backgroundColor: css('--s1'), data: days.map(day => perDay[day] ? perDay[day].standard : 0) },
-      { label: 'Extra for fast mode', backgroundColor: css('--s2'), data: days.map(day => perDay[day] ? perDay[day].cost - perDay[day].standard : 0) },
-    ], fmtUSD, fmtUSD);
-
-    // one pair of bars per model: models used in fast mode first, then by output
-    const models = Object.keys(inR).filter(m => rate(inR[m].std) || rate(inR[m].fast))
-      .sort((a, b) => (inR[b].fast.output > 0) - (inR[a].fast.output > 0) || (inR[b].std.output + inR[b].fast.output) - (inR[a].std.output + inR[a].fast.output));
-    destroy('speedChart');
-    const opts = baseOpts({ indexAxis: 'y', interaction: { mode: 'index', axis: 'y', intersect: false } });
-    opts.scales = {
-      x: { beginAtZero: true, grid: { color: css('--grid') }, border: { display: false }, ticks: { callback: (v) => v, font: { size: 11 }, maxTicksLimit: 6 }, title: { display: true, text: 'output tokens per second', color: css('--muted'), font: { size: 11 } } },
-      y: { grid: { display: false }, border: { color: css('--axis') }, ticks: { color: css('--ink-2'), autoSkip: false, font: { size: 12 } } },
-    };
-    opts.plugins.tooltip.filter = (c) => c.raw != null;
-    opts.plugins.tooltip.callbacks = { label: (c) => ` ${c.dataset.label}: ${fmtRate(c.raw)} over ${inR[c.label][c.datasetIndex ? 'fast' : 'std'].timed.toLocaleString()} messages` };
-    const bars = (label, key, col) => ({ label, backgroundColor: css(col), data: models.map(m => rate(inR[m][key])), borderRadius: 3, borderSkipped: false, barPercentage: 0.8, categoryPercentage: 0.7 });
-    state.charts.speedChart = new Chart(document.getElementById('speedChart'), { type: 'bar',
-      data: { labels: models, datasets: [bars('Standard', 'std', '--s1'), bars('Fast mode', 'fast', '--s2')] }, options: opts });
+    const series = (k) => [
+      { label: 'Standard speed', backgroundColor: css('--s1'), data: days.map(day => perDay[day] ? perDay[day].std[k] : 0) },
+      { label: 'Fast mode', backgroundColor: css('--s2'), data: days.map(day => perDay[day] ? perDay[day].fast[k] : 0) },
+    ];
+    stackedBar('fastCostChart', labels, series('cost'), fmtUSD, fmtUSD);
+    stackedBar('fastTokChart', labels, series('tokens'), fmtTok, (v) => fmtTok(v) + ' tokens');
   }
 
   function setGroupOptions() {

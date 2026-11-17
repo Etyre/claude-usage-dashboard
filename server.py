@@ -759,9 +759,10 @@ class Store:
         row = speed.setdefault(a["day"], {}).get(k)
         if not row:
             row = {"model": a["model"], "fast": "fast" in flags, "sdk": sdk, "cost_usd": 0.0, "standard_usd": 0.0,
-                   "output": 0, "requests": 0, "seconds": 0.0, "timed_output": 0, "timed": 0}
+                   "tokens": 0, "output": 0, "requests": 0, "seconds": 0.0, "timed_output": 0, "timed": 0}
             speed[a["day"]][k] = row
         row["cost_usd"] += cost
+        row["tokens"] += sum(tokens)
         row["standard_usd"] += estimate_cost(a["model"], *tokens, "+".join(f for f in flags if f != "fast"), a["day"])
         for f in ("output", "requests", "seconds", "timed_output", "timed"):
             row[f] += a.get(f, 0)
